@@ -1,0 +1,26 @@
+# Code owners. These paths require maintainer review on every PR, regardless of
+# who (or what) authored the change. The PROTECTED tier of the methodology is
+# enforced here: an agent cannot self-approve a change to a guardrail.
+
+# Default owner for everything.
+*                           @thiago
+
+# The non-negotiables and the agent's operating manual.
+/constitution.md            @thiago
+/CLAUDE.md                  @thiago
+
+# Guardrail configuration — thresholds, bans, gate wiring. Loosening any of
+# these is human-gated (see docs/methodology/self-learning.md).
+/deny.toml                  @thiago
+/rust-toolchain.toml        @thiago
+/.github/                   @thiago
+/xtask/                     @thiago
+/lints/                     @thiago
+/**/*threshold*             @thiago
+/**/gates*                  @thiago
+
+# The methodology itself.
+/docs/methodology/          @thiago
+
+# Agent tooling: skills, subagents, hooks.
+/.claude/                   @thiago

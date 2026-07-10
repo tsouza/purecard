@@ -1,0 +1,14 @@
+# markdownlint-cli2 options. Rule config lives in .markdownlint.yaml (auto-read).
+# Excludes vendored / generated trees so local runs match CI's clean checkout.
+globs:
+  - "**/*.md"
+ignores:
+  - "node_modules/**"
+  - "target/**"
+  - "gen/**"
+  # Inherited, verbatim inputs — the master spec and the committed test corpus —
+  # are content we keep as-is, not repo-authored prose maintained to our markdown
+  # style. Style-linting them risks corrupting a spec / a fixture for no gain.
+  # See .markdownlintignore for the rationale.
+  - "DOMAIN.md"
+  - "corpus/**"

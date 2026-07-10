@@ -1,0 +1,36 @@
+# release-plz configuration — PR-based release automation.
+#
+# On every push to `main`, release-plz opens/updates a "release PR" that bumps
+# the version and updates the changelog from conventional commits. Merging that
+# PR tags and publishes `purecard` to crates.io (via CARGO_REGISTRY_TOKEN, wired
+# in release-plz.yml). Humans stay in the loop; nothing publishes off a normal
+# feature merge.
+
+[workspace]
+# Conventional-commit-driven changelog.
+changelog_update = true
+# Cut a GitHub release/tag alongside the crates.io publish.
+git_release_enable = true
+# Semver bump inferred from commit types (feat -> minor, fix -> patch, ! -> major).
+semver_check = true
+
+[changelog]
+# Keep a Changelog / conventional-commits style header.
+header = """
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/) and this project adheres to
+[Semantic Versioning](https://semver.org/).
+"""
+
+# The published library.
+[[package]]
+name = "purecard"
+publish = true
+
+# The dev/CI orchestrator is never released or published.
+[[package]]
+name = "xtask"
+release = false
+publish = false

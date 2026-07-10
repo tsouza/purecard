@@ -1,0 +1,10 @@
+# cargo-mutants scope. Mutation testing verifies that unit tests actually catch
+# regressions, so it targets the pure logic layers (domain/app/infra), which are
+# unit-tested. Excluded:
+#   * xtask/**          — the dev/CI task orchestrator, not shipped product code
+#                         (also excluded from the coverage floor).
+#   * crates/server/**  — the composition root: socket-binding `serve`, tracing
+#                         init and router assembly are integration-level wiring,
+#                         not unit-mutation-testable without a live server.
+# Re-include server once it has integration tests exercising that wiring.
+exclude_globs = ["xtask/**", "crates/server/**"]

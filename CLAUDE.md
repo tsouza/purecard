@@ -1,0 +1,78 @@
+# CLAUDE.md
+
+You are the engineer on this repository. It is a domain-agnostic Rust server
+starter kit that encodes an AI-driven engineering methodology. Read this file
+every session, then follow the links for depth. Keep this file thin — it has a
+**size budget of ~150 lines**. Detail lives in the ledger below, not here.
+
+## The hard rules (brief)
+
+The authoritative, non-negotiable list is **[constitution.md](constitution.md)**.
+Read it. The essentials:
+
+- **Rust 2024, `forbid(unsafe_code)`, `deny(missing_docs)` on public crates.**
+- **Layering `domain → app → infra → server`, dependencies inward only.** `domain`
+  is pure — no I/O, async, or framework deps.
+- **No `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!` outside tests.**
+  `thiserror` in libs, `anyhow` at boundaries. `tracing`, never `println!`.
+- **One change → one worktree → one PR.** Conventional Commits. Nothing merges red.
+- **`just` is the frontend.** Need a target that doesn't exist? Build it. Don't
+  hand-roll `cargo` in CI or docs.
+- **No shell scripts.** Zero `.sh` files, no non-trivial inline shell. Automation
+  is `just`/`xtask` → a GitHub Action → a Bun `.mjs` (sharing `scripts/lib/`).
+  Hooks live in `lefthook.yml`. See constitution §2.
+- **Portable automation.** Favor built-in / in-process functions over shelling
+  out to platform-specific binaries (hash in Rust, not `sha256sum`). A gate that
+  only runs on the maintainer's OS is a portability bug.
+- **Pin latest stable, verified.** Look up a tool/dependency's real current
+  version before pinning or bumping it — never guess from memory.
+- **Gates run clean.** Warnings are errors — the `-D warnings` standard extends
+  to *every* tool a gate runs; a recurring, silenceable warning is rot, fixed at
+  its source, never grepped away.
+- **Cache or mirror third-party CI fetches.** Never a bare, uncached `curl` in a
+  job — restore from `actions/cache` on the pinned version, or a first-party
+  mirror. See constitution §2.
+- **No test skipping. Zero-tolerance flakes** — fix, never weaken an assertion.
+- **DRY / KISS. Comment economy** (comments explain *why* for exotic logic only;
+  if code needs a comment to be read, fix the code). **No magic constants.**
+- **Library before writing**, but only after the vetting rubric passes.
+- **Fix the system, not the instance** — every bug becomes a test/lint/hook/rule
+  that kills its whole class.
+- **Pre-existing issues:** judge fold-vs-branch, justify the call in the PR.
+- **Never self-lower a gate.** PROTECTED thresholds only ratchet tighter.
+
+## Workflow
+
+```bash
+mise install && mise run install-cargo-tools  # provision toolchain + git hooks (once)
+just new-feature <name> # spin up a worktree + branch
+just spec <name>        # scaffold a feature spec, then /spec plan→implement→verify
+just ci                 # the full local gate; must be green before PR
+```
+
+The generator writes; the **reviewer subagent is the gate**. See
+[docs/methodology/model-tiering.md](docs/methodology/model-tiering.md).
+
+## The ledger (read on demand)
+
+@constitution.md
+
+- **What we're building** → [docs/domain-model.md](docs/domain-model.md)
+- **Heuristics we've learned** → [docs/lessons.md](docs/lessons.md)
+- **Decisions & why** → [docs/decisions/](docs/decisions/)
+- **How we work:**
+  - [Overview](docs/methodology/overview.md) — the whole loop, and the vetting rubric
+  - [Spec-driven](docs/methodology/spec-driven.md) — constitution + spec + `/spec`
+  - [Testing](docs/methodology/testing.md) — the pyramid and its gates
+  - [Quality layers](docs/methodology/quality-layers.md) — L0–L4 defense
+  - [Self-learning](docs/methodology/self-learning.md) — how the kit adapts safely
+  - [Model tiering](docs/methodology/model-tiering.md) — cheap generator, strong reviewer
+  - [Twelve-factor](docs/methodology/twelve-factor.md) — every factor is load-bearing; env-driven, self-documenting config
+
+## Before you open a PR
+
+1. `just ci` is green (no skips, no weakened gates).
+2. The diff matches its spec; the domain-model/lessons/ADRs are updated if the
+   change taught us something.
+3. Any pre-existing issue you touched is accounted for in the PR description.
+4. You added the rule/test/lint that prevents this change's bugs from recurring.

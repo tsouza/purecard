@@ -1,0 +1,48 @@
+[package]
+name = "purecard"
+description = "Grammar- and schema-constrained decoder for Legend Pure: masks a language model's logits so generated queries are valid — and schema-consistent — by construction, in a single forward pass."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["constrained-decoding", "grammar", "llm", "legend", "pure"]
+categories = ["parser-implementations", "text-processing"]
+# Ship only the library in the published crate — not the 4.7 MB test corpus, the
+# docs tree, or the repo's CI/automation. DOMAIN.md rides along as the spec.
+include = ["src/**/*", "README.md", "LICENSE", "DOMAIN.md"]
+
+[dependencies]
+
+[workspace]
+resolver = "3"
+members = ["xtask"]
+# `lints` is a dylint library (links `clippy_utils`, needs rustc_private +
+# nightly); it is built out-of-band via `cargo dylint`, never by a stable
+# `cargo build`, so it is excluded from the workspace.
+exclude = ["lints"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Thiago Souza <tcostasouza@gmail.com>"]
+repository = "https://github.com/tsouza/purecard"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Shared by the `xtask` dev/CI orchestrator. The `purecard` crate itself is
+# dependency-free at M0; decoder deps land with the milestones (see DOMAIN.md).
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+opt-level = 3
