@@ -39,7 +39,10 @@ version = "0.1.0"
 license = "Apache-2.0"
 authors = ["Thiago Souza <tcostasouza@gmail.com>"]
 repository = "https://github.com/tsouza/purecard"
-rust-version = "1.85"
+# 1.88: the `engine` feature's HTTP client (ureq → cookie_store → time) needs the
+# security-patched `time` >= 0.3.47 (RUSTSEC-2026-0009), which requires 1.88. The
+# default-feature crate builds on less, but the package declares one MSRV.
+rust-version = "1.88"
 
 [workspace.dependencies]
 # Shared by the `xtask` dev/CI orchestrator. The `purecard` crate itself is
