@@ -15,6 +15,15 @@ categories = ["parser-implementations", "text-processing"]
 include = ["src/**/*", "README.md", "LICENSE"]
 
 [dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json.workspace = true
+thiserror = "2.0.18"
+# `engine` feature only — the live-HTTP Legend client boundary. The engine is a
+# local, plain-HTTP service (http://localhost:6300), so TLS is disabled
+# (`default-features = false`): no rustls/ring/webpki-roots tree, smaller and
+# license-clean. `json` enables `send_json` / `Body::read_json` for the POST.
+anyhow = { version = "1", optional = true }
+ureq = { version = "3.3.0", default-features = false, features = ["json"], optional = true }
 
 [workspace]
 resolver = "3"
@@ -46,3 +55,9 @@ codegen-units = 1
 
 [profile.bench]
 opt-level = 3
+
+[features]
+# The engine-backed completeness lane (opt-in): a live-HTTP Legend client.
+# Off by default so the crate builds hermetic and dep-light; enabled for the
+# nightly/on-demand completeness tests via `just test-engine`.
+engine = ["dep:ureq", "dep:anyhow"]

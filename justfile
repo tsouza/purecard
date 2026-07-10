@@ -89,6 +89,14 @@ fuzz target="" time="60":
 bench:
     cargo bench --workspace
 
+# Engine-backed completeness lane (opt-in; DOMAIN §8.2/§14.4). Needs docker +
+# the pinned Legend stack. Brings the stack up, then runs the `engine`-feature
+# tests (each health-waits the engine itself). NOT part of the hermetic `just
+# ci`; run on demand or nightly on an x86 runner.
+test-engine:
+    docker compose -f corpus/legend-stack/docker-compose.yml up -d
+    cargo nextest run --features engine
+
 # ---------------------------------------------------------------------------
 # Coverage, supply-chain & API-stability gates
 # ---------------------------------------------------------------------------

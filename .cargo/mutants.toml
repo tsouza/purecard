@@ -8,3 +8,12 @@
 #                         not unit-mutation-testable without a live server.
 # Re-include server once it has integration tests exercising that wiring.
 exclude_globs = ["xtask/**", "crates/server/**"]
+
+# `EngineClient` is the `#[cfg(feature = "engine")]` live-HTTP I/O shim
+# (`health_wait`, `lambda_return_type`). It is NOT compiled in the hermetic
+# default-feature build that `cargo mutants` runs, so its mutants can only ever
+# report MISSED — a false negative, not a real coverage gap. It is instead
+# linted on every PR via `cargo clippy --all-features` and exercised live by the
+# nightly/opt-in `engine` lane (`just test-engine`). The pure decision logic it
+# delegates to — `classify_return_type` — stays fully mutation-tested here.
+exclude_re = ["EngineClient"]

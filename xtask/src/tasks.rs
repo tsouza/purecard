@@ -19,10 +19,14 @@ fn validate_name(name: &str, usage: &str) -> Result<()> {
     Ok(())
 }
 
-/// Full local CI pipeline, fail-fast: format check, then lint, then test.
+/// Full local CI pipeline, fail-fast: format check, lint (default features),
+/// lint with all features, then test.
 ///
 /// Mirrors the ordering used in the CI workflow so a green `xtask ci` locally
-/// is a strong predictor of a green pipeline.
+/// is a strong predictor of a green pipeline. The second clippy pass runs
+/// `--all-features` so feature-gated boundaries (e.g. the `engine` HTTP shim)
+/// are compiled and linted pre-merge with zero infra (constitution §2), even
+/// though the live-engine test lane itself is opt-in/nightly.
 pub fn ci() -> Result<()> {
     run_cargo_steps(&[
         &["fmt", "--all", "--check"],
@@ -30,6 +34,15 @@ pub fn ci() -> Result<()> {
             "clippy",
             "--workspace",
             "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
             "--",
             "-D",
             "warnings",
