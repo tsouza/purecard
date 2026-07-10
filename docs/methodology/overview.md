@@ -30,8 +30,8 @@ spec  →  worktree  →  implement  →  just ci  →  review  →  merge  → 
    change lives in one worktree, isolated from every other in-flight change.
 3. **Implement.** The generator writes code and tests against the spec, obeying
    [`constitution.md`](../../constitution.md).
-4. **`just ci`.** The fast local gate — the layering check, format, clippy
-   (`-D warnings`), and the workspace test suite. Coverage, mutation, the
+4. **`just ci`.** The fast local gate — format, clippy (`-D warnings`), and the
+   workspace test suite. Coverage, mutation, the
    structural sweep, and the supply-chain audits run as their own `just` targets
    and as separate CI jobs, not from `just ci`. Nothing proceeds red. See
    [testing.md](testing.md).
@@ -65,14 +65,14 @@ principles worth naming here, because everything else follows from them:
 but only after the candidate clears this rubric. The agent applies it before
 adding any new crate, and records the outcome in the PR.
 
-| Criterion              | Passes if…                                                                                                  |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------- |
-| **License-compatible** | License is Apache-2.0-compatible; `cargo-deny` allows it.                                                   |
-| **Reputable**          | Recognized authorship/org; not a typosquat; sane download and reverse-dep counts.                           |
-| **Low rug-pull risk**  | Not a one-maintainer black box for a load-bearing role; no history of malicious or abandoned releases.      |
-| **Maintained**         | Recent releases, issues triaged, security reports handled; compiles on our pinned toolchain.                |
-| **Community**          | Real usage and docs; problems are searchable, not silent.                                                   |
-| **Good fit**           | Solves *our* problem without dragging in a heavy or conflicting dependency tree; the API fits our layering. |
+| Criterion              | Passes if…                                                                                                      |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| **License-compatible** | License is Apache-2.0-compatible; `cargo-deny` allows it.                                                       |
+| **Reputable**          | Recognized authorship/org; not a typosquat; sane download and reverse-dep counts.                               |
+| **Low rug-pull risk**  | Not a one-maintainer black box for a load-bearing role; no history of malicious or abandoned releases.          |
+| **Maintained**         | Recent releases, issues triaged, security reports handled; compiles on our pinned toolchain.                    |
+| **Community**          | Real usage and docs; problems are searchable, not silent.                                                       |
+| **Good fit**           | Solves *our* problem without dragging in a heavy or conflicting dependency tree; the API fits our architecture. |
 
 If a candidate clears every row, prefer it. If it fails any row and no alternative
 clears the bar, **write our own** — small, owned, and tested — rather than take on

@@ -11,8 +11,9 @@ The authoritative, non-negotiable list is **[constitution.md](constitution.md)**
 Read it. The essentials:
 
 - **Rust 2024, `forbid(unsafe_code)`, `deny(missing_docs)` on public crates.**
-- **Layering `domain → app → infra → server`, dependencies inward only.** `domain`
-  is pure — no I/O, async, or framework deps.
+- **Pure decoder core** — no I/O, async, network, or framework deps; it never
+  calls the Legend engine (the host supplies `Vocab`/`Schema`). The feature-gated
+  PyO3 `ffi` module is the only non-pure surface.
 - **No `unwrap`/`expect`/`panic!`/`todo!`/`unimplemented!`/`dbg!` outside tests.**
   `thiserror` in libs, `anyhow` at boundaries. `tracing`, never `println!`.
 - **One change → one worktree → one PR.** Conventional Commits. Nothing merges red.

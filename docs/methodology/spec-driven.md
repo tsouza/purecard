@@ -28,8 +28,8 @@ A feature moves through three phases, driven by `/spec` and scaffolded by
 
 Turn the spec into an approach *before* writing code. Read the constitution and
 the current domain model, identify the entities and invariants involved, decide
-where each piece lands in the layering (`domain → app → infra → server`), and name
-the tests that will prove it. Surface open questions here, not mid-implementation.
+which modules the change touches, and name the tests that will prove it. Surface
+open questions here, not mid-implementation.
 
 ### implement
 
