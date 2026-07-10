@@ -94,7 +94,7 @@ countermeasures:
 
 ```sh
 just test        # nextest across the workspace
-just ci          # the fast gate: layering + fmt + clippy + test
+just ci          # the fast gate: fmt + clippy + test
 ```
 
 `just ci` is the fast pre-PR gate. The heavier gates — coverage (`just

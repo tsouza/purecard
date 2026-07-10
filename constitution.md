@@ -24,15 +24,16 @@ Every rule is tagged. If a rule is untagged, treat it as PROTECTED.
   fights the file over which pin wins. Reach for a toolchain action solely when a
   job needs a channel the file doesn't provide (e.g. a one-job nightly install).
 - `#![forbid(unsafe_code)]` in every crate. No exceptions, no `allow`.
-- `#![deny(missing_docs)]` on every public crate (`domain`, `app`, `infra`,
-  `server`). Public items are documented or they do not merge.
-- The workspace is layered: `domain → app → infra → server`. Dependencies point
-  **inward only**. `domain` has no I/O, framework, or async dependency. The
-  layering is enforced by crate visibility and `cargo-deny` bans, not by
-  convention.
+- `#![deny(missing_docs)]` on the published `purecard` crate. Public items are
+  documented or they do not merge.
+- The decoder core is **pure**: no I/O, no network, no async, no framework
+  dependency. It never calls the Legend engine — the host supplies `Vocab` and
+  `Schema` at the boundary (`DOMAIN.md` §6.2, §9.3). The one non-pure surface is
+  the feature-gated PyO3 `ffi` module. This purity is the decoder's load-bearing
+  structural invariant, standing in for the crate-layering a server would use.
 - No `unwrap`, `expect`, `panic!`, `todo!`, `unimplemented!`, or `dbg!` outside
   `#[cfg(test)]`. Libraries return `Result` with `thiserror` types; boundaries
-  (`server`, `xtask`) may use `anyhow`.
+  (`xtask`, the PyO3 `ffi` module) may use `anyhow`.
 - Structured `tracing` from the first commit. No `println!` for diagnostics.
 
 ## 2. Change discipline — PROTECTED
