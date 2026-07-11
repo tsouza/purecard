@@ -54,7 +54,7 @@ lint-actions:
 # lint.yml `zizmor` CI gate enforces. Reads .github/zizmor.yml (accepted-finding
 # ignores). Online audits are skipped locally without a GitHub token.
 zizmor:
-    zizmor .github/workflows/
+    zizmor .github/
 
 # ---------------------------------------------------------------------------
 # Testing (layered: unit -> integration -> chaos -> mutation -> fuzz)

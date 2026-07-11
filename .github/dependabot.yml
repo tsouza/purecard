@@ -11,6 +11,12 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Wait before proposing a freshly-published release, so a yanked or
+    # compromised version is caught upstream before it reaches a PR here
+    # (zizmor dependabot-cooldown; complements the SHA pinning).
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
     open-pull-requests-limit: 10
     groups:
       cargo-minor-patch:
@@ -24,6 +30,9 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
     groups:
       actions:
         update-types:
