@@ -63,7 +63,7 @@ Naive per-token PDA replay at every step over a 150k vocab is far too slow. Pure
 
 ### 4.1 Compile once
 
-1. **Compile** the grammar to a byte-level PDA once (per grammar). Bind the model vocabulary (`Vocab`: each token id → its raw byte string) to the `CompiledGrammar`, sizing an empty lazy per-state mask cache. Tokens are indexed directly by id — there is no separate trie; per-state acceptance is resolved by probing the PDA on first visit to each state (§4.5).
+1. **Compile** the grammar to a byte-level PDA once per **(model vocabulary, grammar)** pair — the masks are vocabulary-indexed, so a different tokenizer needs its own compile (matching `docs/domain-model.md`'s "once per model + grammar"). Bind the model vocabulary (`Vocab`: each token id → its raw byte string) into the `CompiledGrammar`, which owns it, sizing an empty lazy per-state mask cache. Tokens are indexed directly by id — there is no separate trie; per-state acceptance is resolved by probing the PDA on first visit to each state (§4.5).
 
 ### 4.2 Partition the vocabulary per PDA state
 
@@ -116,7 +116,7 @@ The families and the *relative* cost each establishes (no absolute figures are q
 pub struct Vocab { /* token id -> raw bytes */ }
 impl Vocab { pub fn from_byte_tokens(tokens: Vec<Vec<u8>>, eos: u32) -> Self; }
 
-pub struct CompiledGrammar { /* &Vocab + lazy per-state mask cache */ }
+pub struct CompiledGrammar { /* owns Vocab + lazy per-state mask cache */ }
 impl CompiledGrammar {
     pub fn compile(vocab: Vocab) -> Self;               // bind vocab, size the lazy caches
     pub fn from_spec(spec: &str, vocab: Vocab) -> Self; // §5 EBNF compiler is deferred: a stub

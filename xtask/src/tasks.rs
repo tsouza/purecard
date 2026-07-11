@@ -268,8 +268,9 @@ const NON_CORE_PACKAGE_PREFIXES: &[&str] = &["tests/", "corpus/"];
 /// The core's runtime-dependency allowlist: the *only* crates permitted in the
 /// published `purecard` crate's `[dependencies]` table. `thiserror` is the
 /// decoder's library error-type crate (constitution §1; `DecodeError` in
-/// `src/error.rs`, ADR-0003). `serde` + `serde_json` are the **M3 widening**
-/// (recorded in ADR-0005): L2 ingests the host `Schema` as JSON at session init
+/// `src/error.rs`). `serde` + `serde_json` are the **M3 widening**; the current
+/// allowlist `{ thiserror, serde, serde_json }` is recorded authoritatively in
+/// ADR-0005. L2 ingests the host `Schema` as JSON at session init
 /// (`Schema::from_json`, `docs/spec/schema.md` §6.3, §9), so its parser is shipped
 /// host-facing code — a bespoke JSON parser would fail "library before writing"
 /// (constitution §4).
@@ -288,8 +289,8 @@ const CORE_DEP_ALLOWLIST: &[&str] = &["thiserror", "serde", "serde_json"];
 /// 1. the crate's `[dependencies]` table holds only allowlisted runtime deps
 ///    ([`CORE_DEP_ALLOWLIST`] — currently `thiserror`, `serde`, and `serde_json`,
 ///    the M3 widening per ADR-0005); every remaining harness dependency
-///    (`anyhow`, `ureq`) stays a `[dev-dependency]`, so it never enters a
-///    downstream consumer's resolution graph;
+///    (`anyhow`, `ureq`, `proptest`, `criterion`) stays a `[dev-dependency]`, so
+///    it never enters a downstream consumer's resolution graph;
 /// 2. `cargo package --list` names no file under `tests/` or `corpus/`, so a
 ///    change to the `include` list cannot smuggle the harness into the tarball.
 ///
@@ -306,7 +307,7 @@ pub fn check_core_deplight() -> Result<()> {
     if !disallowed.is_empty() {
         anyhow::bail!(
             "the published `purecard` core's `[dependencies]` table may hold only the \
-             allowlisted runtime deps {{ {} }} (ADR-0003), but found: {}. Move harness \
+             allowlisted runtime deps {{ {} }} (ADR-0005), but found: {}. Move harness \
              deps to `[dev-dependencies]`.",
             CORE_DEP_ALLOWLIST.join(", "),
             disallowed.join(", ")

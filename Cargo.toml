@@ -17,8 +17,9 @@ categories = ["parser-implementations", "text-processing"]
 # into the tarball — exactly what `just check-core-deplight` guards against.
 include = ["src/**/*", "/README.md", "/LICENSE"]
 
-# The core's dependency allowlist: `thiserror` (ADR-0003), plus `serde` +
-# `serde_json` — the M3 widening, recorded in ADR-0005. `thiserror` is the
+# The core's dependency allowlist — `{ thiserror, serde, serde_json }` — in its
+# current, M3-widened form, recorded authoritatively in ADR-0005 (`serde` +
+# `serde_json` are that widening). `thiserror` is the
 # byte-PDA's library error type (constitution §1). `serde` + `serde_json` ingest
 # the host `Schema` as JSON at session init (`Schema::from_json`,
 # `docs/spec/schema.md` §6.3, §9), so their parser is shipped host-facing code,

@@ -13,9 +13,10 @@
 //! rolling back untouched if the token is inadmissible. The schema overlay (L2,
 //! M3) is shipped: [`with_schema`](DecoderSession::with_schema) installs a
 //! [`Schema`], and [`allowed_mask`](DecoderSession::allowed_mask) intersects the
-//! syntactic L1 mask with the schema-legal set at each identifier and operand
-//! position (§3.1) — an additive narrowing that leaves the `schema`-is-`None`
-//! (L1-only) path untouched.
+//! syntactic L1 mask with the schema-legal set at the identifier and operand
+//! positions covered by the shipped L2 rules (§3.1) — N3, N1/N2, N6, and the
+//! numeric/string levers of T1; other operand-type rules pass through. This is an
+//! additive narrowing that leaves the `schema`-is-`None` (L1-only) path untouched.
 
 use crate::error::DecodeError;
 use crate::grammar::compiled::CompiledGrammar;

@@ -139,8 +139,10 @@ zero core dependencies.
 
 ### Compile a grammar (once per model + grammar)
 
-`CompiledGrammar::compile(vocab)` (or the stub `from_spec(spec, vocab)`) builds the
-PDA and lazy per-state mask caches. [`spec/architecture.md`](spec/architecture.md) §4.5, §9.1.
+`CompiledGrammar::compile(vocab)` (or the stub `from_spec(spec, vocab)`) binds the
+vocab and **sizes** the lazy per-state mask cache — it probes no token up front;
+each state's partition is built on first visit (`cached(state)`).
+[`spec/architecture.md`](spec/architecture.md) §4.5, §9.1.
 
 ### Constrain one generation (per decode step)
 

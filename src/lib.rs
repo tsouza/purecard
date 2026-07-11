@@ -37,7 +37,11 @@
 //! Milestone **M5** is the hardening pass: the [`selfcheck`] surface
 //! ([`self_check`], [`self_check_smoke`], [`SelfCheckError`]) round-trips a host
 //! tokenizer against the vocabulary before decode; [`accept_token`] finalizes on
-//! the reserved EOS id (accepted only in an accepting configuration); the
+//! the reserved EOS sentinel — the id one past the last vocab token
+//! (`CompiledGrammar::eos_bit`), distinct from every real token id — accepted
+//! only when the byte-PDA is in an accepting configuration (a complete query:
+//! every frame closed and the last token lexed at a value boundary, so a trailing
+//! top-level identifier terminates cleanly); the
 //! [`DecodeError`] token-level channel is split into
 //! [`InadmissibleToken`](DecodeError::InadmissibleToken),
 //! [`UnknownToken`](DecodeError::UnknownToken), and
