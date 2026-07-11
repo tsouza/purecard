@@ -1,7 +1,7 @@
 //! Byte recognizer + replay driver — throwaway M0 wiring.
 //!
 //! This proves the corpus-load + per-byte-stepping plumbing. It is **not** the
-//! `DOMAIN.md` §9 recognizer surface: the real §8.1 soundness harness is
+//! `docs/spec/architecture.md` §9 recognizer surface: the real §8.1 soundness harness is
 //! token-level and mask-based (`accept_token` / `allowed_mask`, computed by
 //! speculative per-token byte-feeding with rollback), which a byte-*committing*
 //! recognizer cannot express. M1 supplies that harness and may replace this

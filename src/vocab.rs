@@ -1,7 +1,7 @@
 //! The model vocabulary: token id → raw bytes.
 //!
 //! A scaffold only at M0 — nothing enumerates it yet. The token trie and the
-//! per-state mask cache that consume it are M2 (see `DOMAIN.md` §4), and
+//! per-state mask cache that consume it are M2 (see `docs/spec/architecture.md` §4), and
 //! `accept_token(id)` is a later `bytes(id).for_each(accept_byte)` loop once a
 //! host supplies a real vocabulary.
 

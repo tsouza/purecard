@@ -4,7 +4,7 @@ Here is the synthesized authoritative document. (Output below is the full Markdo
 
 # Testing strategy (PureCard decoder)
 
-PureCard is a byte-level grammar/schema-constrained decoder for Legend Pure — a Rust library plus a future thin PyO3 boundary (`DOMAIN.md` §9), not a web server. Its correctness story is not the server pyramid in `docs/methodology/testing.md`; it is the **oracle-driven** strategy of `DOMAIN.md` §8, backed by two assets already committed to this workspace: `corpus/gold_queries.jsonl` (5,034 execution-verified gold Pure queries over 161 databases, §13.1) and `corpus/legend-stack/` (the pinned Legend engine 4.113.0 / SDLC 0.195.0, §14). This document is the layered-testing map for that strategy: what each layer proves, how its *valid inputs are mechanically generated*, where it lives, and which CI lane runs it.
+PureCard is a byte-level grammar/schema-constrained decoder for Legend Pure — a Rust library plus a future thin PyO3 boundary (`docs/spec/architecture.md` §9), not a web server. Its correctness story is not the server pyramid in `docs/methodology/testing.md`; it is the **oracle-driven** strategy of `docs/spec/testing.md` §8, backed by two assets already committed to this workspace: `corpus/gold_queries.jsonl` (5,034 execution-verified gold Pure queries over 161 databases, §13.1) and `corpus/legend-stack/` (the pinned Legend engine 4.113.0 / SDLC 0.195.0, §14). This document is the layered-testing map for that strategy: what each layer proves, how its *valid inputs are mechanically generated*, where it lives, and which CI lane runs it.
 
 The guarantee under test is asymmetric and silent (§8): a **soundness** bug masks a valid continuation and permanently blinds the model; a **completeness** bug lets it walk into a dead end the compiler rejects. Neither is visible without an oracle. That is why every §8 layer is built, and why the numeric floors are PROTECTED ratchets.
 
@@ -67,7 +67,7 @@ The decoder pyramid derives every input **mechanically** — no hand-picked quer
 
 ## Layers in detail
 
-Crate module map (`DOMAIN.md` §3.2): `grammar/{spec,pda,build}.rs`, `vocab.rs`, `mask/{cache,engine}.rs`, `schema/{model,scope,narrow}.rs`, `session.rs`. M0 keeps only the dep-light core in `src/` (`lib.rs` + `vocab.rs`) and ships the oracle harness under `tests/support/{error,recognizer,corpus,legend}.rs`, pulled into the integration-test binaries via `#[path]` (ADR-0003, per `specs/m0-oracle-harness.md`); M1 replaces `StubDecoder`'s body behind the unchanged `ByteRecognizer` trait.
+Crate module map (`docs/spec/architecture.md` §3.2): `grammar/{spec,pda,build}.rs`, `vocab.rs`, `mask/{cache,engine}.rs`, `schema/{model,scope,narrow}.rs`, `session.rs`. M0 keeps only the dep-light core in `src/` (`lib.rs` + `vocab.rs`) and ships the oracle harness under `tests/support/{error,recognizer,corpus,legend}.rs`, pulled into the integration-test binaries via `#[path]` (ADR-0003, per `specs/m0-oracle-harness.md`); M1 replaces `StubDecoder`'s body behind the unchanged `ByteRecognizer` trait.
 
 1. **Unit** — *what:* each pure fn's local contract. *Example fn:* `pda::transition_requires_open_bracket_after_groupby`; input: state after `->groupBy(`, expect `[` live / `)` dead. Also `vocab::from_byte_tokens` round-trip, `corpus::load_gold` malformed-line → `CorpusError::Json { line, .. }`. *Location:* `#[cfg(test)]` in each `src/**` module. *Gate:* hermetic; counts toward coverage + mutation.
 
@@ -110,7 +110,7 @@ Two lanes, per §14.4, honest and no-skip:
 
 ## Per-milestone rollout
 
-Mapped to `DOMAIN.md` §10 milestones and the shipped M0 spec.
+Mapped to `docs/spec/overview.md` §10 milestones and the shipped M0 spec.
 
 - **M0 — oracle harness (in progress).** Unit tests (`error`/`vocab`/`recognizer`/`corpus`) + **byte-level** differential-soundness replay of all 5,034 gold through `StubDecoder` (`tests/soundness_replay.rs`, exact `EXPECTED_GOLD_RECORDS` count) + engine POST skeleton behind `#[cfg(feature = "legend")]`. Floors armed: **coverage ≥ 70%** on default features. No token-level replay yet (no vocab ships).
 - **M1 — L1 grammar.** Real byte-PDA replaces `StubDecoder` behind `ByteRecognizer`: byte-level soundness becomes a *real* gate (100% gold admits, zero premature dead-ends). Property tests (§8.5) + byte-level mask-precision + the accepting-walk generator come online. **Mutation floor ≥ 80%** armed over `grammar/`. Completeness lane starts: accepting walks → `grammarToJson`+`lambdaReturnType` nightly (§8.2), target 100% compile.

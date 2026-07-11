@@ -1,5 +1,5 @@
 #![cfg(feature = "legend")]
-//! Engine-backed completeness lane — opt-in (`DOMAIN.md` §8.2, §14.4).
+//! Engine-backed completeness lane — opt-in (`docs/spec/testing.md` §8.2, §14.4).
 //!
 //! Compiled and run ONLY under `--features legend` (via `just test-legend`)
 //! against a live Legend stack. The entire compilation unit is absent from the

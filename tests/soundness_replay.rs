@@ -1,7 +1,7 @@
 //! Always-on wiring/liveness gate (default features, no network, no docker).
 //!
 //! This proves the corpus loads and streams through per-byte stepping without a
-//! harness error. It is **not** a `DOMAIN.md` §8.1 soundness guarantee — that
+//! harness error. It is **not** a `docs/spec/testing.md` §8.1 soundness guarantee — that
 //! test is token-level and mask-based and arrives with M1. Here the recognizer
 //! is a `StubDecoder` that accepts every byte, so the gate's teeth are: every
 //! line parses, the exact record count matches, and (in the negative test) the

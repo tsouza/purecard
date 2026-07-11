@@ -1,6 +1,6 @@
 //! Streaming loader for the gold-query corpus (`corpus/gold_queries.jsonl`).
 //!
-//! One JSON object per line (`DOMAIN.md` §13.1). Records are parsed lazily, one
+//! One JSON object per line (`docs/spec/testing.md` §13.1). Records are parsed lazily, one
 //! line at a time, so the ~4.7 MB file is never loaded whole.
 
 use std::fs::File;

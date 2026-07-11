@@ -1,4 +1,4 @@
-//! Legend Engine completeness probe (`DOMAIN.md` §8.2, §14).
+//! Legend Engine completeness probe (`docs/spec/testing.md` §8.2, §14).
 //!
 //! The response→outcome classification — the actual point of the completeness
 //! loop — is a pure, always-compiled function ([`classify_return_type`]), so it

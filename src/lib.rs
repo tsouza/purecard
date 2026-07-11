@@ -10,8 +10,8 @@
 //!
 //! It offers two nested guarantees and deliberately refuses a third; see
 //! [`GuaranteeLevel`]. The complete design — grammar, masking algorithm, schema
-//! overlay, and the oracle-driven test strategy — is specified in `DOMAIN.md` at
-//! the repository root.
+//! overlay, and the oracle-driven test strategy — is specified under
+//! `docs/spec/`.
 //!
 //! ## Status
 //!
