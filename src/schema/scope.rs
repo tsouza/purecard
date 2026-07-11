@@ -121,7 +121,7 @@ pub(crate) enum L2Position {
 /// Names the L1 methods that establish a named relation scope (§6.4.5/6.4.6):
 /// after one of these calls closes, subsequent column references are narrowed
 /// (N6). Their own argument lambdas still run over the pre-relation scope, so a
-/// reference *inside* them is not yet narrowed.
+/// reference *inside* them is not narrowed.
 const ESTABLISHING_METHODS: &[&str] = &["project", "groupBy", "olapGroupBy"];
 
 /// Names the L1 positions whose string argument is a relation-column *reference*

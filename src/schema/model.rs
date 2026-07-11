@@ -91,7 +91,7 @@ pub(crate) enum PropType {
 ///
 /// M3 ships the identifier/type rules (N/T) that read a member's *type*, not its
 /// multiplicity; the collapse rule T6 that consumes multiplicity is deferred, so
-/// the bounds are carried on [`Resolved`] but not yet acted on.
+/// the bounds are carried on [`Resolved`] but not consumed by the current rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub(crate) struct Multiplicity {
     /// The lower bound.

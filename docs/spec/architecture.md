@@ -112,7 +112,9 @@ The families and the *relative* cost each establishes (no absolute figures are q
 
 ### 9.1 Rust core
 
-```rust
+This is a signature sketch, not compilable code. The authoritative, compile-and-run-checked usage example is the crate-root doctest in `src/lib.rs` (`cargo test --doc`), which drives this exact surface — so a rename or receiver change fails the build there, keeping this sketch honest.
+
+```text
 pub struct Vocab { /* token id -> raw bytes */ }
 impl Vocab { pub fn from_byte_tokens(tokens: Vec<Vec<u8>>, eos: u32) -> Self; }
 

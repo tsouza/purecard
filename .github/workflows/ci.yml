@@ -58,6 +58,11 @@ jobs:
               - 'sgconfig.yml'
               - 'scripts/**'
               - 'release-plz.toml'
+              # The doc-fact gate (cargo xtask check-doc-facts) reads these, so a
+              # doc/corpus edit that drifts from its source must trigger the lane.
+              - 'README.md'
+              - 'docs/**'
+              - 'corpus/gold_queries.jsonl'
               - '.github/workflows/ci.yml'
 
   # --- Primary gate: fmt + lint + build + all nextest layers via xtask -----
@@ -241,6 +246,10 @@ jobs:
         run: ast-grep scan
       - name: Postponed-marker gate
         run: bun scripts/checks/postponed-markers.mjs --all
+      - name: Stale self-description gate
+        run: bun scripts/checks/stale-selfdescription.mjs --all
+      - name: Doc-fact assertions
+        run: cargo xtask check-doc-facts
 
   # --- Docs build (missing-docs is a hard error) ---------------------------
   docs:

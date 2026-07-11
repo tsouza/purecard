@@ -13,6 +13,42 @@
 //! overlay, and the oracle-driven test strategy — is specified under
 //! `docs/spec/`.
 //!
+//! ## Usage
+//!
+//! Drive the decoder over a host-supplied [`Vocab`] and [`CompiledGrammar`],
+//! optionally narrowing the per-step mask to a [`Schema`]. This example is a
+//! doctest: it is compiled and run against the real public surface, so a renamed
+//! type, a removed constructor, or a changed receiver breaks the build.
+//!
+//! ```
+//! use purecard::{CompiledGrammar, DecoderSession, Schema, Vocab, self_check_smoke};
+//!
+//! // The host supplies the model vocabulary (token id → raw bytes) and the
+//! // reserved EOS id; `from_spec` compiles the emitted-Pure grammar for it.
+//! let vocab = Vocab::from_byte_tokens(vec![b"filter".to_vec()], 1);
+//! let grammar = CompiledGrammar::from_spec("", vocab);
+//!
+//! // A zero-argument startup smoke check over the embedded gold-shaped queries.
+//! let _ = self_check_smoke(&grammar).is_ok();
+//!
+//! // L1 (syntactic) session: build the mask, offer a token, query completion.
+//! let mut plain = DecoderSession::new(&grammar);
+//! let _mask = plain.allowed_mask();              // `&mut self`
+//! let _ = plain.accept_token(0);                 // `Result<(), DecodeError>`
+//! let _done: bool = plain.is_complete();
+//! plain.reset();
+//!
+//! // L2 (schema-consistent) session: the mask is additionally narrowed to the
+//! // schema-legal terminals at each identifier/operand position.
+//! let schema = Schema::from_json(r#"{"db_id": "d", "db_path": "model::Db", "classes": {}}"#)?;
+//! let mut sess = DecoderSession::with_schema(&grammar, schema);
+//! let _mask = sess.allowed_mask();
+//! let _ = sess.accept_token(0);
+//! let _done: bool = sess.is_complete();
+//! sess.reset();
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
 //! ## Status
 //!
 //! All milestones **M0–M5** are shipped. The core is the [`GuaranteeLevel`]
@@ -24,7 +60,7 @@
 //! [`Schema::from_json`] ingests the host contract as JSON and
 //! [`DecoderSession::with_schema`] narrows the mask to schema-legal terminals at
 //! each identifier/operand position. The gold-corpus loader and the Legend
-//! completeness probe remain test-oracle scaffolding under `tests/` (see
+//! completeness probe live in the test-oracle harness under `tests/` (see
 //! `docs/decisions/0003-non-core-in-tests-deplight-core.md`); the core's runtime
 //! dependencies are `thiserror` (error types) and `serde`/`serde_json` (the L2
 //! JSON ingress, ADR-0005).

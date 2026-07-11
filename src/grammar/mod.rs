@@ -7,10 +7,10 @@
 //! belongs to, and the [`DeadState`] carrier the [`Pda`](pda::Pda) hands back on
 //! rejection.
 //!
-//! There is no compiled-EBNF `spec.rs` yet: M2 ships the recogniser plus the
+//! The emitted-Pure grammar (§5) is fixed: M2 ships the recogniser plus the
 //! [`CompiledGrammar`] vocabulary/mask cache (`docs/spec/architecture.md` §4),
-//! but real EBNF spec compilation (§5) is a later milestone, so
-//! [`CompiledGrammar::from_spec`] is a stub over the single fixed M1 PDA.
+//! and [`CompiledGrammar::from_spec`] ignores its `spec` argument, compiling the
+//! single fixed M1 PDA against the vocab.
 
 pub mod compiled;
 pub mod pda;
