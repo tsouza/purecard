@@ -16,7 +16,6 @@ updates:
     # (zizmor dependabot-cooldown; complements the SHA pinning).
     cooldown:
       default-days: 7
-      semver-major-days: 30
     open-pull-requests-limit: 10
     groups:
       cargo-minor-patch:
@@ -32,7 +31,6 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
-      semver-major-days: 30
     groups:
       actions:
         update-types:
