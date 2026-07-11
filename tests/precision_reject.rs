@@ -14,14 +14,13 @@
 //! byte **or** ends the stream in a non-accepting (incomplete) state. Both are
 //! genuine refusals — a decoder that never dead-ends but never completes has still
 //! declined the string.
+#![forbid(unsafe_code)]
 
-use purecard::{ByteRecognizer, CompiledGrammar, DecodeError, DecoderSession, Vocab};
+#[path = "support/l1.rs"]
+mod l1;
 
-/// An L1-only grammar over an empty vocabulary — the reject gate drives only the
-/// byte-recognizer surface, which never consults the vocab.
-fn l1_grammar() -> CompiledGrammar {
-    CompiledGrammar::compile(Vocab::from_byte_tokens(Vec::new(), 0))
-}
+use l1::l1_grammar;
+use purecard::{ByteRecognizer, DecodeError, DecoderSession};
 
 /// Drive `text` through a fresh real [`DecoderSession`] and report whether the
 /// recogniser refuses it — a mid-stream dead state, or an incomplete stream at

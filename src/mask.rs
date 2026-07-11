@@ -20,10 +20,13 @@ const WORD_BITS: u32 = 64;
 /// A dense bitmask over token ids `0..len`, packed into `ceil(len / 64)` `u64`
 /// words.
 ///
-/// Every id passed to [`set`](BitMask::set), [`clear`](BitMask::clear), or
-/// [`test`](BitMask::test) must be `< len` (the length fixed at construction);
-/// an out-of-range id indexes past the backing words. The intended `len` is
-/// `vocab.len() + 1`, so the top bit is the reserved EOS position.
+/// Ids at or beyond `len` (the length fixed at construction) are **out of
+/// range**: [`set`](BitMask::set) and [`clear`](BitMask::clear) treat them as a
+/// no-op and [`test`](BitMask::test) reports them absent, so a stray id can
+/// never index past the backing words or flip a padding bit — and, because no
+/// path can set an id `>= len`, [`iter_ones`](BitMask::iter_ones) never yields
+/// one. The intended `len` is `vocab.len() + 1`, so the top bit is the reserved
+/// EOS position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitMask {
     words: Vec<u64>,
@@ -58,21 +61,33 @@ impl BitMask {
         self.len == 0
     }
 
-    /// Set the bit for `id` (mark the token admissible).
+    /// Set the bit for `id` (mark the token admissible). An id `>= len` is out
+    /// of range and ignored (see the type contract).
     pub fn set(&mut self, id: u32) {
+        if id as usize >= self.len {
+            return;
+        }
         let (word, bit) = locate(id);
         self.words[word] |= 1u64 << bit;
     }
 
-    /// Clear the bit for `id` (mark the token inadmissible).
+    /// Clear the bit for `id` (mark the token inadmissible). An id `>= len` is
+    /// out of range and ignored (see the type contract).
     pub fn clear(&mut self, id: u32) {
+        if id as usize >= self.len {
+            return;
+        }
         let (word, bit) = locate(id);
         self.words[word] &= !(1u64 << bit);
     }
 
-    /// Whether the bit for `id` is set.
+    /// Whether the bit for `id` is set. An id `>= len` is out of range and
+    /// reported absent (see the type contract).
     #[must_use]
     pub fn test(&self, id: u32) -> bool {
+        if id as usize >= self.len {
+            return false;
+        }
         let (word, bit) = locate(id);
         (self.words[word] >> bit) & 1 == 1
     }
@@ -93,9 +108,13 @@ impl BitMask {
 
     /// Overwrite `self` with `other`'s bits by copying words in place — no
     /// allocation, the reuse that keeps the per-step mask build alloc-free
-    /// (§4.3). Both masks must share a length.
+    /// (§4.3). Both masks are meant to share a length; a mismatch copies only the
+    /// overlapping words rather than panicking, so a public misuse degrades
+    /// gracefully instead of aborting (constitution §1 — no library panic).
     pub fn copy_from(&mut self, other: &BitMask) {
-        self.words.copy_from_slice(&other.words);
+        for (dst, &src) in self.words.iter_mut().zip(&other.words) {
+            *dst = src;
+        }
     }
 
     /// Iterate the ids of every set bit, ascending.
@@ -128,7 +147,11 @@ impl Iterator for OnesInWord {
 
 #[cfg(test)]
 mod tests {
-    use super::BitMask;
+    use super::{BitMask, WORD_BITS};
+
+    /// A host-scale vocabulary size — its EOS bit at id `V` (mask length `V + 1`)
+    /// sits far past the first backing word, exercising the word-index math.
+    const HOST_SCALE_VOCAB_LEN: u32 = 150_000;
 
     #[test]
     fn with_len_rounds_up_to_whole_words() {
@@ -137,6 +160,47 @@ mod tests {
         let mask = BitMask::with_len(65);
         assert_eq!(mask.len(), 65);
         assert!((0..65).all(|id| !mask.test(id)));
+    }
+
+    #[test]
+    fn is_empty_is_exactly_a_zero_length_mask() {
+        // A zero-length mask spans no ids; any positive length does not.
+        assert!(BitMask::with_len(0).is_empty());
+        assert!(!BitMask::with_len(1).is_empty());
+        assert!(!BitMask::with_len(WORD_BITS as usize).is_empty());
+    }
+
+    #[test]
+    fn clear_targets_the_exact_bit_across_a_word() {
+        // Clearing a bit at a non-zero in-word position must clear *that* bit and
+        // leave its word-mates set — the shift direction in `clear` is
+        // load-bearing (a `>>` would no-op every bit but position 0).
+        let mut mask = BitMask::with_len(WORD_BITS as usize);
+        for id in 0..5u32 {
+            mask.set(id);
+        }
+        mask.clear(3);
+        assert!(!mask.test(3));
+        assert!(mask.test(0) && mask.test(1) && mask.test(2) && mask.test(4));
+    }
+
+    #[test]
+    fn out_of_range_ids_are_inert_never_panicking() {
+        // One backing word: valid ids are `0..64`. An id at or past `len` must be
+        // a no-op / absent, never an out-of-bounds index into the words.
+        let mut mask = BitMask::with_len(WORD_BITS as usize);
+        mask.set(WORD_BITS); // == len
+        mask.set(WORD_BITS + 100); // well past len, past the only word
+        assert!(!mask.test(WORD_BITS));
+        assert!(!mask.test(WORD_BITS + 100));
+        assert_eq!(mask.iter_ones().count(), 0);
+        // A valid id in the same word still round-trips; out-of-range clears — at
+        // the `== len` boundary and well past it — leave it untouched, never
+        // indexing past the backing word.
+        mask.set(WORD_BITS - 1);
+        mask.clear(WORD_BITS); // == len
+        mask.clear(WORD_BITS + 5);
+        assert!(mask.test(WORD_BITS - 1));
     }
 
     #[test]
@@ -203,7 +267,7 @@ mod tests {
     #[test]
     fn the_reserved_top_bit_is_addressable() {
         // len = V + 1: the EOS bit lives at id V, the highest addressable id.
-        let v = 150_000u32;
+        let v = HOST_SCALE_VOCAB_LEN;
         let mut mask = BitMask::with_len(v as usize + 1);
         assert!(!mask.test(v));
         mask.set(v);

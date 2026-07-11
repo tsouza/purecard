@@ -89,6 +89,13 @@ fuzz target="" time="60":
 bench:
     cargo bench --workspace
 
+# Build and run the criterion benches under CodSpeed instrumentation — the same
+# workflow CI's `bench (codspeed)` job runs (ci.yml). Needs the cargo-codspeed
+# subcommand; local regression tracking uploads only when configured.
+codspeed:
+    cargo codspeed build --workspace
+    cargo codspeed run
+
 # Legend-backed completeness lane (opt-in; DOMAIN §8.2/§14.4). Needs docker +
 # the pinned Legend stack. Delegates to xtask, which brings the stack up, runs
 # the `legend`-feature tests (each health-waits the engine itself), then ALWAYS

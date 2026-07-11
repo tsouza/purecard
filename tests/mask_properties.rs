@@ -13,6 +13,7 @@
 //!   `vocab.bytes(id)`.
 //! - **(c) rejected ⇒ untouched.** Every id *cleared* in `allowed_mask()` is
 //!   rejected by `accept_token`, leaving the session byte-identical (rollback).
+#![forbid(unsafe_code)]
 
 #[path = "support/synth.rs"]
 mod synth;
@@ -28,6 +29,10 @@ use walker::generate_walks;
 /// since each case walks the whole mask and drives `accept_token`, but still
 /// dense across every character class.
 const VOCAB_SIZE: usize = 400;
+
+/// The deterministic proptest case count for this lane (constitution §4 — no
+/// magic constants; this is gate configuration, tunable up only).
+const PROPTEST_CASES: u32 = 256;
 
 /// Drive `prefix` bytes through a fresh session and its parallel raw recognizer
 /// state, returning a session positioned at that reachable configuration.
@@ -55,7 +60,7 @@ fn walk_prefixes() -> Vec<Vec<u8>> {
 proptest! {
     // A fixed, committed config: deterministic case count, and regressions are
     // persisted so a discovered counterexample re-runs forever.
-    #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: PROPTEST_CASES, ..ProptestConfig::default() })]
 
     /// (a) + (c): the mask exactly separates admissible from rejected tokens, and
     /// each verdict is safe.
@@ -87,9 +92,13 @@ proptest! {
                 );
             } else {
                 // (c): a rejected token errs and leaves the session byte-identical.
+                // Compare the *full* PDA snapshot (state + entire stack), not just
+                // the derived mask/offset: a Pop-then-fail that restored only
+                // `(state, stack_len)` would leave a corrupted stack that offset
+                // and completeness alone cannot see.
                 prop_assert!(result.is_err(), "id {id} rejected by mask but accepted");
                 prop_assert_eq!(trial.offset(), before.offset());
-                prop_assert_eq!(trial.is_complete(), before.is_complete());
+                prop_assert_eq!(trial.pda(), before.pda());
             }
         }
 
@@ -127,17 +136,18 @@ proptest! {
 
         prop_assert_eq!(tok_result.is_err(), fold_rejected, "accept/reject disagree for id {}", id);
         if fold_rejected {
-            // Rollback: a rejected token leaves the session exactly as it was.
+            // Rollback: a rejected token leaves the session exactly as it was —
+            // asserted on the full PDA snapshot (state + entire stack), so a
+            // corrupted-stack rollback cannot slip past.
             prop_assert_eq!(tok.offset(), session.offset());
-            prop_assert_eq!(tok.is_complete(), session.is_complete());
+            prop_assert_eq!(tok.pda(), session.pda());
         } else {
             prop_assert_eq!(tok.offset(), folded.offset());
-            prop_assert_eq!(tok.is_complete(), folded.is_complete());
-            // Strong final-state equality: the allowed mask is a pure function of
-            // (state, stack), so equal masks pin equal configurations.
-            let folded_mask: Vec<u32> = folded.allowed_mask().iter_ones().collect();
-            let tok_mask: Vec<u32> = tok.allowed_mask().iter_ones().collect();
-            prop_assert_eq!(folded_mask, tok_mask);
+            // Strong final-state equality on the full `(state, stack)`
+            // configuration, not the derived mask: two distinct configurations
+            // can share a mask, so mask equality alone would not prove the
+            // token- and byte-driven runs truly converged.
+            prop_assert_eq!(tok.pda(), folded.pda());
         }
     }
 }

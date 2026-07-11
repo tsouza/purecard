@@ -6,20 +6,21 @@
 //! real reachable configurations by replaying each seeded accepting walk
 //! (`tests/support/walker.rs`) prefix-by-prefix — never a synthetic `State`
 //! literal — and, at each prefix, asserts the session's mask is *bit-equal* to
-//! [`brute_force_mask`](synth::brute_force_mask) (a fresh-clone, byte-at-a-time
-//! probe of every synthetic-vocab token), EOS bit included.
+//! [`brute_force_mask`] (a fresh-clone, byte-at-a-time probe of every
+//! synthetic-vocab token), EOS bit included.
 //!
 //! This pins `cache[state].indep ∪ runtime-deferred-flip == uncached truth`. It
 //! is the executioner for every cache mutant: "return the cache without the
 //! flip", "flip the wrong bit", "skip EOS", "cache the wrong state".
+#![forbid(unsafe_code)]
 
 #[path = "support/synth.rs"]
 mod synth;
 #[path = "support/walker.rs"]
 mod walker;
 
-use purecard::{ByteRecognizer, CompiledGrammar, DecoderSession, Pda};
-use synth::{brute_force_mask, synthetic_vocab};
+use purecard::{BitMask, ByteRecognizer, CompiledGrammar, DecoderSession, Pda, Vocab};
+use synth::synthetic_vocab;
 use walker::generate_walks;
 
 /// Synthetic vocabulary size for the oracle. Large enough that every character
@@ -28,12 +29,39 @@ use walker::generate_walks;
 /// slice of 3-byte ones — while keeping the O(prefixes · vocab) brute force fast.
 const VOCAB_SIZE: usize = 1200;
 
+/// The minimum number of distinct automaton states the walk set must reach for
+/// the oracle to be non-vacuous — a floor, not a magic literal (constitution §4).
+const MIN_DISTINCT_STATES: usize = 15;
+
+/// The permanently-correct reference mask at `pda`'s live configuration: the set
+/// of token ids whose raw bytes keep a *clone* of the automaton non-dead, plus
+/// the reserved EOS bit iff the automaton is already accepting.
+///
+/// Deliberately naive — a fresh clone and a byte-at-a-time `advance` per token,
+/// touching only the public [`Pda`] API — so it shares no code with the cache or
+/// `probe` it validates. Lives here, with its sole caller.
+#[must_use]
+fn brute_force_mask(pda: &Pda, vocab: &Vocab) -> BitMask {
+    let mut mask = BitMask::with_len(vocab.len() + 1);
+    for id in 0..vocab.len() as u32 {
+        let bytes = vocab.bytes(id).unwrap_or(&[]);
+        let mut clone = pda.clone();
+        if bytes.iter().all(|&byte| clone.advance(byte).is_ok()) {
+            mask.set(id);
+        }
+    }
+    if pda.is_accepting() {
+        mask.set(vocab.len() as u32);
+    }
+    mask
+}
+
 /// Assert the session's live mask equals the brute-force reference at `reference`'s
 /// configuration, reporting the walk and prefix length on mismatch.
 fn assert_mask_matches(
     session: &mut DecoderSession<'_>,
     reference: &Pda,
-    vocab: &purecard::Vocab,
+    vocab: &Vocab,
     walk: &[u8],
     prefix_len: usize,
 ) {
@@ -96,7 +124,7 @@ fn allowed_mask_bit_equals_brute_force_at_every_reachable_walk_prefix() {
     // Non-vacuity: the walks must have exercised many distinct states, at least
     // one non-empty stack, and at least one live context-dependent closer.
     assert!(
-        distinct_states.len() >= 15,
+        distinct_states.len() >= MIN_DISTINCT_STATES,
         "walks reached only {} distinct states — oracle is too narrow",
         distinct_states.len()
     );

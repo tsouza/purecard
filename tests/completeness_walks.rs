@@ -7,18 +7,16 @@
 //! that generation is deterministic and non-trivial. It is the hermetic floor
 //! under the opt-in `legend` engine lane, which POSTs the same walks to a live
 //! Legend stack (see `tests/legend_completeness.rs`).
+#![forbid(unsafe_code)]
 
+#[path = "support/l1.rs"]
+mod l1;
 #[path = "support/walker.rs"]
 mod walker;
 
-use purecard::{ByteRecognizer, CompiledGrammar, DecoderSession, Vocab};
+use l1::l1_grammar;
+use purecard::{ByteRecognizer, DecoderSession};
 use walker::{WALK_COUNT, generate_walks};
-
-/// An L1-only grammar over an empty vocabulary — this lane drives the
-/// byte-recognizer surface, which never consults the vocab.
-fn l1_grammar() -> CompiledGrammar {
-    CompiledGrammar::compile(Vocab::from_byte_tokens(Vec::new(), 0))
-}
 
 /// Every generated walk must stream cleanly through an independent
 /// [`DecoderSession`] and end complete — the walker's clone-and-probe must agree,

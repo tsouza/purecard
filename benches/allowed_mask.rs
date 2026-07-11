@@ -10,6 +10,7 @@
 //! - **shallow** — an empty stack right after the source (dense admissible set);
 //! - **deep-stack** — nested open frames, maximizing context-dependent flips;
 //! - **identifier-position** — just after a `->`, an identifier-dense position.
+#![forbid(unsafe_code)]
 
 use std::hint::black_box;
 

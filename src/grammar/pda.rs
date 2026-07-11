@@ -881,7 +881,7 @@ pub struct Probe {
 /// job of the [`DecoderSession`](crate::DecoderSession) that wraps it. It only
 /// applies each [`Step`] and answers whether the stream so far is in an accepting
 /// configuration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pda {
     state: State,
     stack: Vec<Frame>,

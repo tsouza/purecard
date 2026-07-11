@@ -12,6 +12,7 @@
 //! The corpus is partitioned by [`Envelope`], and each partition's record count is
 //! asserted against an exact named constant so shrinkage, corruption, or a
 //! mis-partitioned query all redden the gate.
+#![forbid(unsafe_code)]
 
 use std::path::PathBuf;
 
@@ -23,16 +24,12 @@ use std::path::PathBuf;
 mod corpus;
 #[path = "support/error.rs"]
 mod error;
+#[path = "support/l1.rs"]
+mod l1;
 
 use corpus::load_gold;
-use purecard::{ByteRecognizer, CompiledGrammar, DecodeError, DecoderSession, Envelope, Vocab};
-
-/// An L1-only grammar over an empty vocabulary: the byte-recognizer surface this
-/// soundness gate drives never consults the vocab, so no synthetic tokens are
-/// needed to construct a session (M2 `DecoderSession::new` takes a grammar).
-fn l1_grammar() -> CompiledGrammar {
-    CompiledGrammar::compile(Vocab::from_byte_tokens(Vec::new(), 0))
-}
+use l1::l1_grammar;
+use purecard::{ByteRecognizer, DecodeError, DecoderSession, Envelope};
 
 /// Arm-A (relational envelope) record count. An exact named constant, not a
 /// threshold (constitution §4): a mis-partition must redden the gate.

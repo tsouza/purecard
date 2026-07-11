@@ -82,9 +82,18 @@ impl CompiledGrammar {
         self.vocab.len() as u32
     }
 
+    /// The EOS-inclusive mask length (`eos_bit() + 1`): the **single** source of
+    /// the `V + 1` sizing every per-step mask and cached partition shares, so the
+    /// session buffer and a state's `indep` mask can never disagree on length and
+    /// trip [`BitMask::copy_from`](crate::mask::BitMask::copy_from) (constitution
+    /// §4, DRY).
+    pub(crate) fn mask_len(&self) -> usize {
+        self.eos_bit() as usize + 1
+    }
+
     /// The memoized partition for `state`, built on first access (§4.5).
     pub(crate) fn cached(&self, state: State) -> &Cached {
-        self.cache[state.index()].get_or_init(|| build(state, &self.vocab))
+        self.cache[state.index()].get_or_init(|| build(state, &self.vocab, self.mask_len()))
     }
 }
 
@@ -92,9 +101,9 @@ impl CompiledGrammar {
 /// over an **empty** stack (§4.2). A token that stays alive is a
 /// context-independent survivor; one that dies consulting the ambient stack is
 /// deferred; one that dies outright is admissible from no stack and is dropped.
-fn build(state: State, vocab: &Vocab) -> Cached {
+fn build(state: State, vocab: &Vocab, mask_len: usize) -> Cached {
     let base = Pda::at(state);
-    let mut indep = BitMask::with_len(vocab.len() + 1);
+    let mut indep = BitMask::with_len(mask_len);
     let mut deferred = Vec::new();
     let mut scratch = Vec::new();
     for id in 0..vocab.len() as u32 {
@@ -133,6 +142,18 @@ mod tests {
         let grammar = CompiledGrammar::compile(vocab());
         assert_eq!(grammar.vocab().len(), 4);
         assert_eq!(grammar.eos_bit(), 4);
+    }
+
+    #[test]
+    fn mask_len_is_one_past_the_last_token() {
+        // The single EOS-inclusive length: `V + 1`, equivalently `eos_bit + 1`.
+        // Pins the `+ 1` so an arithmetic slip (a `-`/`*`) reddens the gate.
+        let grammar = CompiledGrammar::compile(vocab());
+        assert_eq!(grammar.mask_len(), grammar.vocab().len() + 1);
+        assert_eq!(grammar.mask_len(), grammar.eos_bit() as usize + 1);
+        // A state's cached survivor mask is sized by exactly this derivation.
+        let cached = grammar.cached(State::ExpectValue);
+        assert_eq!(cached.indep.len(), grammar.mask_len());
     }
 
     #[test]

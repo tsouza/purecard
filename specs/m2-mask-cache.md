@@ -78,15 +78,18 @@ impl Pda {
 
     /// Zero-heap-alloc admissibility probe: replay pure `step` over a reused
     /// scratch stack seeded from the live stack (or empty, for cache build).
-    /// Returns (alive, consulted_ambient) — `consulted_ambient` is true iff a
-    /// Pop was attempted while the local scratch was empty (a bare closer).
+    /// Returns (alive, consulted_ambient) — `consulted_ambient` is true iff the
+    /// byte died against an *empty* local scratch that *some* enclosing frame
+    /// would have kept alive: a bare closer `)]}`, **or** a `,`/`;`/`*` that
+    /// needs an enclosing frame. It is every stack-dependent byte, not only a
+    /// bare closer.
     pub fn probe(&self, bytes: &[u8], scratch: &mut Vec<Frame>) -> Probe { ... }
 }
 
 pub struct Probe { pub alive: bool, pub consulted_ambient: bool }
 ```
 
-`probe` reuses one `scratch: Vec<Frame>` across all candidate tokens → no per-token heap `clone`. `consulted_ambient` is what falls out of the probe to classify a token as context-dependent for cache purposes.
+`probe` reuses one `scratch: Vec<Frame>` across all candidate tokens → no per-token heap `clone`. `consulted_ambient` is what falls out of the probe to classify a token as context-dependent for cache purposes: it is set for **every** byte whose admissibility turns on the ambient stack — a bare closer, or a `,`/`;`/`*` that a frame permits — so no stack-dependent token is ever cached as independent and dropped from a mask a live frame would allow.
 
 ### CompiledGrammar (`src/grammar/compiled.rs`)
 
@@ -94,7 +97,6 @@ pub struct Probe { pub alive: bool, pub consulted_ambient: bool }
 pub struct CompiledGrammar {
     vocab: Vocab,
     cache: Vec<OnceCell<Cached>>,          // len == State::COUNT
-    closer_candidates: Box<[u32]>,          // ids whose bytes contain any of )]}
 }
 
 /// Per-state memoized split (§4.2).
@@ -104,10 +106,16 @@ struct Cached {
 }
 
 impl CompiledGrammar {
-    pub fn compile(vocab: Vocab) -> Self { /* size cache to State::COUNT; precompute closer_candidates */ }
+    pub fn compile(vocab: Vocab) -> Self { /* size cache to State::COUNT */ }
     pub fn from_spec(/* … */) -> Self { /* stub → compile over the fixed M1 PDA */ }
+    fn mask_len(&self) -> usize { /* eos_bit() + 1 — the single V+1 derivation */ }
 }
 ```
+
+The exact `consulted_ambient` classification (Decision D5) makes a conservative
+`closer_candidates` pre-filter unnecessary — the probe already partitions each
+token precisely — so the shipped `CompiledGrammar` carries only the vocab and the
+lazy cache.
 
 `cache` is interior-mutable (`OnceCell`) so `allowed_mask(&self)` fills the entry for a state on first visit (§4.5): only reached states pay the build.
 
@@ -116,13 +124,13 @@ impl CompiledGrammar {
 **Cache build (lazy, once per reached `state`, §4.2/4.5):**
 
 ```rust
-fn build(state: State, vocab: &Vocab, candidates: &[u32]) -> Cached {
+fn build(state: State, vocab: &Vocab, mask_len: usize) -> Cached {
     let base = Pda::at(state);          // PDA pinned at `state`, empty stack
-    let mut indep = BitMask::with_len(vocab.len() + 1);
+    let mut indep = BitMask::with_len(mask_len);   // mask_len == vocab.len() + 1
     let mut deferred = Vec::new();
     let mut scratch = Vec::new();
     for id in 0..vocab.len() as u32 {
-        let p = base.probe(vocab.bytes(id), &mut scratch);
+        let p = base.probe(vocab.bytes(id).unwrap_or(&[]), &mut scratch);
         if p.consulted_ambient {
             deferred.push(id);          // stack-sensitive → resolve at runtime
         } else if p.alive {
@@ -133,54 +141,58 @@ fn build(state: State, vocab: &Vocab, candidates: &[u32]) -> Cached {
 }
 ```
 
-A token is context-dependent iff its byte path attempts a `Pop` on its own empty local scratch — i.e. it consults the ambient `stack_top` (the bare closers `)]}` and anything ending in an unmatched closer). `closer_candidates` is a cheap conservative pre-filter; the exact classification is the `consulted_ambient` flag from the probe (see Decision D5).
+A token is context-dependent iff its byte path dies against its own empty local scratch in a way an ambient frame would have rescued — a bare closer `)]}`, or a `,`/`;`/`*` that needs an enclosing frame. That exact `consulted_ambient` flag from the probe *is* the classifier (Decision D5); no separate closer pre-filter is kept.
 
 **Per step (§4.3, no allocation):**
 
 ```rust
-pub fn allowed_mask(&self) -> &BitMask {
-    let st = self.pda.state();
-    let cached = self.grammar.cached(st);            // fills OnceCell on first visit
-    let mask = &mut self.mask;                        // owned, reused buffer
-    mask.copy_from(&cached.indep);                    // O(V/64) word copy
-    let mut scratch = self.scratch.borrow_mut();      // reused Vec<Frame>
-    for &id in &cached.deferred {                     // |deferred| ≪ V
-        if self.pda.probe(self.grammar.vocab.bytes(id), &mut scratch).alive {
-            mask.set(id);                              // survives against LIVE stack
+pub fn allowed_mask(&mut self) -> &BitMask {
+    let cached = self.grammar.cached(self.pda.state());  // fills OnceCell on first visit
+    self.mask.copy_from(&cached.indep);                  // O(V/64) word copy
+    if self.pda.stack_top().is_some() {                  // empty stack ⇒ no deferred survives
+        for &id in &cached.deferred {                    // |deferred| ≪ V
+            let bytes = self.grammar.vocab().bytes(id).unwrap_or(&[]);
+            if self.pda.admits(bytes, &mut self.scratch) {   // reused Vec<Frame>
+                self.mask.set(id);                       // survives against the LIVE stack
+            }
         }
     }
-    if self.pda.is_complete() { mask.set(EOS_ID) } else { mask.clear(EOS_ID) }
-    // M3 hook (non-goal here): if let Some(t) = &self.schema { mask.intersect(t) }
-    mask
+    let eos = self.grammar.eos_bit();
+    if self.pda.is_accepting() { self.mask.set(eos) } else { self.mask.clear(eos) }
+    // M3 hook (non-goal here): if let Some(t) = &self.schema { self.mask.intersect(t) }
+    &self.mask
 }
 ```
 
-The deferred re-probe runs against the **live** stack, so `step(state, stack_top, byte)` returns `Pop` only on a matched closer — this exactly enforces bracket matching against the real stack top. Everything else is a single word-wise copy.
+`allowed_mask` takes `&mut self`: it refills the session's owned, reused `mask` buffer in place (and fills the lazy cache), so it hands back a borrow of that buffer rather than a fresh allocation. The deferred re-probe runs against the **live** stack (via `Pda::admits`, the leaner sibling of `probe`), so `step(state, stack_top, byte)` returns `Pop` only on a matched closer — this exactly enforces bracket matching against the real stack top. When the live stack is empty, every deferred token is still dead (nothing to consult), so the whole re-probe is skipped; otherwise everything is a single word-wise copy.
 
 ### `accept_token` (§9.1, the §8.5 rollback property)
 
 ```rust
 pub fn accept_token(&mut self, id: u32) -> Result<(), DecodeError> {
     if id == EOS_ID {
-        return if self.pda.is_complete() { Ok(()) } else { Err(DecodeError::UnexpectedEos) };
+        return if self.pda.is_accepting() { Ok(()) } else { Err(DecodeError::UnexpectedEos) };
     }
-    let snapshot = (self.pda.state(), self.pda.stack_len());   // cheap: State is Copy
-    for &b in self.grammar.vocab.bytes(id) {
-        if self.accept_byte(b).is_err() {                      // reuses M1 deadness channel
-            self.pda.rollback_to(snapshot);                    // token rejected → untouched
-            return Err(DecodeError::InadmissibleToken { id });
+    let Some(bytes) = self.grammar.vocab().bytes(id) else {
+        return Err(DecodeError::InadmissibleToken { id });     // unknown / out-of-range id
+    };
+    let mut probe = self.pda.clone();                          // fold into a CLONE…
+    for &b in bytes {
+        if probe.advance(b).is_err() {
+            return Err(DecodeError::InadmissibleToken { id }); // …discard it on any dead byte
         }
     }
-    self.offset += self.grammar.vocab.bytes(id).len();
+    self.pda = probe;                                          // …commit only on full success
+    self.offset += bytes.len();
     Ok(())
 }
 ```
 
-Because M1 `advance` mutates on success, we snapshot `(state, stack.len())` and truncate/restore on any interior dead byte — a rejected token leaves the session exactly as it was (the §8.5 invariant that makes speculative masking sound).
+The token is folded through a **clone** of the byte-PDA and the clone is committed only when every byte survives; a mid-token dead byte discards the clone, so the live automaton — state *and* the full contents of its frame stack — is provably untouched. This is the §8.5 invariant that makes speculative masking sound. Restoring from only a saved `(state, stack_len)` would **not** suffice: a token can `Pop` an existing frame and then die on a later byte, and a length alone cannot rebuild the popped frame's kind — a clone-and-commit (or an equivalent full snapshot) is required. `Vocab::bytes(id)` returns `Option`, so an unknown id short-circuits to `InadmissibleToken` before any fold; a cleared EOS bit is the separate `UnexpectedEos` path above.
 
 ### DecoderSession surface (`src/session.rs`)
 
-`DecoderSession<'g>` gains `grammar: &'g CompiledGrammar`, one owned reusable `mask: BitMask`, and a reused `scratch: RefCell<Vec<Frame>>`. `new()` becomes `new(g: &'g CompiledGrammar)` (L1-only ⇒ `schema: None`). The M1 `ByteRecognizer` impl (`accept_byte`/`is_complete`/`reset`) is untouched; the three new methods (`allowed_mask`, `accept_token`) plus inherent re-exposed `is_complete`/`reset` sit beside it so callers need not import the trait. `reset` keeps the `mask` buffer (no re-alloc).
+`DecoderSession<'g>` gains `grammar: &'g CompiledGrammar`, one owned reusable `mask: BitMask`, and a reused owned `scratch: Vec<Frame>`. Because `allowed_mask` takes `&mut self` (it refills the owned `mask` in place), the scratch stack needs no interior mutability — a plain `Vec<Frame>`, not a `RefCell`. `new()` becomes `new(g: &'g CompiledGrammar)` (L1-only ⇒ `schema: None`). The M1 `ByteRecognizer` impl (`accept_byte`/`is_complete`/`reset`) is untouched; the new methods (`allowed_mask`, `accept_token`, and a `pda()` snapshot accessor) plus inherent re-exposed `is_complete`/`reset` sit beside it so callers need not import the trait. `reset` keeps the `mask` buffer (no re-alloc).
 
 ## API / contract impact
 
@@ -198,7 +210,7 @@ All new public items carry doc comments (`deny(missing_docs)`). **Core `[depende
 
 - **Correctness vs brute-force — `tests/mask_oracle.rs`.** At each state produced by replaying a `generate_walks()` prefix (guarantees reachability, §4.5 — never synthetic `State` literals), assert `session.allowed_mask()` is **bit-equal** to a reference mask built by cloning the PDA and probing every token's bytes byte-by-byte from the live state+stack. Pins `cache[state].indep ∪ runtime-deferred-flip == naive truth`, including the EOS bit ⇔ `is_complete()`. This kills "return cache without flip", "flip wrong bit", and "skip EOS" mutants.
 - **Property tests (§8.5) — `tests/mask_properties.rs`** (`proptest`, fixed `rng_algorithm` + committed `proptest-regressions/`, matching the walker determinism rule §2). Generators: synthetic `Vocab` of 1–8-byte strings over `walker::ALPHABET` + EOS; reachable states via `generate_walks()` prefixes. Properties: **(a)** every id set in `allowed_mask()`, `accept_token`'d on a clone, returns `Ok` and leaves the PDA non-dead and non-panicking; **(b)** `accept_token(id)` ≡ folding `accept_byte` over `vocab.bytes(id)` — identical final state, stack, and `Err`/offset; **(c)** every id *cleared* in `allowed_mask()` is rejected by `accept_token` and leaves the session byte-identical (rollback).
-- **Criterion benchmark — `benches/allowed_mask.rs`** (`harness = false`, `[[bench]]` in `Cargo.toml`; `just bench` already runs `cargo bench --workspace`). Build `CompiledGrammar` + `Vocab` once outside `iter`; `black_box` the session; measure `allowed_mask()` alone at ~150k synthetic tokens across three states: **shallow** (empty stack), **deep-stack** (maximizes context-dependent flips), **identifier-position** (dense admissible set). Report µs/token and assert the ≤ few-hundred-µs floor in CI. Wire the dormant lane: `benches/` presence + `cargo codspeed build/run` (ci.yml:280) is already scripted — flip repo var `CODSPEED_ENABLED=true` (ci.yml:262) for regression tracking.
+- **Criterion benchmark — `benches/allowed_mask.rs`** (`harness = false`, `[[bench]]` in `Cargo.toml`; run through `just bench`). Build `CompiledGrammar` + `Vocab` once outside `iter`; `black_box` the session; measure `allowed_mask()` alone at ~150k synthetic tokens across three states: **shallow** (empty stack), **deep-stack** (maximizes context-dependent flips), **identifier-position** (dense admissible set). Report µs/token and assert the ≤ few-hundred-µs floor in CI. Wire the dormant lane: `benches/` presence + the `just codspeed` CodSpeed build/run workflow (mirrored by CI's `bench (codspeed)` job) is already scripted — flip repo var `CODSPEED_ENABLED=true` for regression tracking.
 - **Mutation surface.** Keep cache lookup, `build`, and the deferred flip as small pure functions so `cargo-mutants` targets them; the oracle test is their executioner. Coverage floor 70% + mutation floor hold or ratchet up — never down.
 - **Walker extension.** Add `walker::token_walks(vocab)`: the clone-and-probe loop over token *ids* (`accept_token`) instead of bytes, yielding token-id sequences that feed the completeness lane at token granularity.
 

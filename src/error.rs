@@ -35,11 +35,15 @@ pub enum DecodeError {
         stack_top: &'static str,
     },
 
-    /// A whole token was rejected: feeding its raw bytes dead-ends the
-    /// recognizer, so it cannot extend the stream. Raised by
-    /// [`accept_token`](crate::DecoderSession::accept_token) for any id cleared in
-    /// [`allowed_mask`](crate::DecoderSession::allowed_mask); the session is left
-    /// untouched (§8.5 rollback), so speculative masking is sound.
+    /// A whole token was rejected by
+    /// [`accept_token`](crate::DecoderSession::accept_token), leaving the session
+    /// untouched (§8.5 rollback), so speculative masking is sound. Two cases
+    /// raise it: a **valid, non-EOS** token id whose raw bytes dead-end the
+    /// recognizer (so it cannot extend the stream) — every such id is cleared in
+    /// [`allowed_mask`](crate::DecoderSession::allowed_mask) — and an **unknown**
+    /// id with no entry in the host `Vocab` (out of range), which is inadmissible
+    /// before any byte is folded. A cleared **EOS** bit is the distinct
+    /// [`UnexpectedEos`](DecodeError::UnexpectedEos) case, not this one.
     #[error("token id {id} is inadmissible: its bytes dead-end the recognizer")]
     InadmissibleToken {
         /// The rejected token id.

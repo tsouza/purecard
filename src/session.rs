@@ -35,7 +35,8 @@ pub struct DecoderSession<'g> {
     offset: usize,
     grammar: &'g CompiledGrammar,
     /// The owned, reused mask buffer `allowed_mask` refills each step — sized to
-    /// `vocab.len() + 1` (EOS bit included) so no per-step allocation is needed.
+    /// [`CompiledGrammar::mask_len`] (EOS bit included) so no per-step allocation
+    /// is needed.
     mask: BitMask,
     /// A reused scratch stack for the per-step deferred-token re-probe, kept here
     /// so the hot path never allocates.
@@ -52,7 +53,7 @@ impl<'g> DecoderSession<'g> {
             pda: Pda::new(),
             offset: 0,
             grammar,
-            mask: BitMask::with_len(grammar.vocab().len() + 1),
+            mask: BitMask::with_len(grammar.mask_len()),
             scratch: Vec::new(),
         }
     }
@@ -109,12 +110,15 @@ impl<'g> DecoderSession<'g> {
     /// **untouched** (§8.5 — the invariant that makes speculative masking sound).
     ///
     /// The reserved EOS id (one past the last vocab token) is accepted iff the
-    /// stream is already complete. Otherwise the token's raw bytes are folded
-    /// through the byte-PDA; if any byte dead-ends, the automaton is rolled back
-    /// to its pre-token configuration and the token is rejected. Byte-for-byte
+    /// stream is already complete; an unknown (out-of-range) id, or one whose
+    /// bytes dead-end the recognizer, is rejected. The token is folded through a
+    /// **clone** of the byte-PDA and the clone is committed only if every byte
+    /// survives; a mid-token dead byte discards the clone, so the live automaton
+    /// — its state *and* the full contents of its frame stack — is provably
+    /// unchanged. (Restoring only a saved `(state, stack_len)` could not rebuild
+    /// a frame an interior `Pop` had removed.) On acceptance it is byte-for-byte
     /// equivalent to folding [`accept_byte`](ByteRecognizer::accept_byte) over
-    /// `vocab.bytes(id)`, except the roll-back hides a partial advance on
-    /// rejection.
+    /// `vocab.bytes(id)`.
     ///
     /// # Errors
     /// Returns [`DecodeError::UnexpectedEos`] if EOS is signalled before the
@@ -131,19 +135,30 @@ impl<'g> DecoderSession<'g> {
         let Some(bytes) = self.grammar.vocab().bytes(id) else {
             return Err(DecodeError::InadmissibleToken { id });
         };
-        // Snapshot the automaton so an interior dead byte rolls the whole token
-        // back — `advance` is no-mutate-on-dead per byte, but earlier bytes of
-        // this token have already mutated. The clone is one small stack copy per
-        // *accepted* token, off the per-candidate mask hot path.
-        let saved = self.pda.clone();
+        // Fold into a clone and commit only on full success: a rejection never
+        // touches `self.pda`, so no stack contents can be corrupted by a
+        // Pop-then-fail. One small stack clone per call, off the per-candidate
+        // mask hot path.
+        let mut probe = self.pda.clone();
         for &byte in bytes {
-            if self.pda.advance(byte).is_err() {
-                self.pda = saved;
+            if probe.advance(byte).is_err() {
                 return Err(DecodeError::InadmissibleToken { id });
             }
         }
+        self.pda = probe;
         self.offset += bytes.len();
         Ok(())
+    }
+
+    /// The underlying byte-PDA at its full `(state, stack)` configuration.
+    ///
+    /// Exposed so a caller — or a test — can compare two sessions for a
+    /// byte-identical automaton configuration, which the derived
+    /// [`allowed_mask`](DecoderSession::allowed_mask) view cannot prove on its
+    /// own: two different `(state, stack)` configurations can share a mask.
+    #[must_use]
+    pub fn pda(&self) -> &Pda {
+        &self.pda
     }
 
     /// Whether the stream so far is a complete query (an accepting configuration).
@@ -285,6 +300,24 @@ mod tests {
     }
 
     #[test]
+    fn pda_exposes_the_live_automaton_configuration() {
+        use crate::grammar::pda::{Frame, State};
+        let grammar = CompiledGrammar::compile(token_vocab());
+        let mut session = DecoderSession::new(&grammar);
+        // A fresh session sits at the initial configuration…
+        assert_eq!(session.pda().state(), State::Start);
+        assert_eq!(session.pda().stack_top(), None);
+        // …and after opening a call the accessor reflects the *real* live state
+        // and stack, so it cannot be a constant / default value.
+        session.accept_token(0).expect("source is admissible");
+        session
+            .accept_token(1)
+            .expect("a step opener is admissible");
+        assert_eq!(session.pda().state(), State::ExpectValue);
+        assert_eq!(session.pda().stack_top(), Some(Frame::Paren));
+    }
+
+    #[test]
     fn accept_token_streams_a_query_token_by_token() {
         let grammar = CompiledGrammar::compile(token_vocab());
         let mut session = DecoderSession::new(&grammar);
@@ -338,6 +371,43 @@ mod tests {
         }
         // Now the query is complete, EOS is legal.
         assert!(session.accept_token(eos).is_ok());
+    }
+
+    #[test]
+    fn the_recognizer_trait_reports_completeness() {
+        let grammar = CompiledGrammar::compile(token_vocab());
+        let mut session = DecoderSession::new(&grammar);
+        session.accept_token(0).expect("source is admissible");
+        session
+            .accept_token(1)
+            .expect("a step opener is admissible");
+        // Inside the still-open `->take(` call: not an accepting configuration,
+        // read through the trait method (not the inherent one).
+        assert!(!ByteRecognizer::is_complete(&session));
+        session.reset();
+        for id in [0u32, 1, 2, 3] {
+            session.accept_token(id).expect("admissible");
+        }
+        // A closed, completed query: accepting, read through the trait.
+        assert!(ByteRecognizer::is_complete(&session));
+    }
+
+    #[test]
+    fn the_recognizer_trait_reset_restores_the_initial_configuration() {
+        let grammar = CompiledGrammar::compile(token_vocab());
+        let fresh = DecoderSession::new(&grammar);
+        let mut session = DecoderSession::new(&grammar);
+        for id in [0u32, 1, 2] {
+            session.accept_token(id).expect("admissible");
+        }
+        // Reset through the trait must rewind the *full* configuration: offset,
+        // automaton state, and the entire frame stack — not merely the offset.
+        ByteRecognizer::reset(&mut session);
+        assert_eq!(session.offset(), 0);
+        assert_eq!(session.pda(), fresh.pda());
+        // …and the per-step mask must equal a never-driven session's, bit for bit.
+        let mut untouched = DecoderSession::new(&grammar);
+        assert_eq!(session.allowed_mask(), untouched.allowed_mask());
     }
 
     #[test]
