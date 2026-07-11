@@ -18,8 +18,8 @@ one reviewer-approved PR at a time.
   in git and in [`decisions/`](decisions/).
 - No filler. If an entry says nothing a reader couldn't infer from the type names,
   delete it.
-- Cross-link the feature spec (`specs/<name>.md`) and the spec (`spec/*`) section that introduced
-  each concept.
+- Cross-link the feature spec (`specs/<name>.md`, from `just spec`) and the
+  `docs/spec/` section that introduced each concept.
 
 ---
 
