@@ -13,6 +13,8 @@
 
 #[path = "support/l2.rs"]
 mod l2;
+#[path = "support/lex.rs"]
+mod lex;
 
 use l2::{TokenVocab, lex, load_schema};
 use purecard::{CompiledGrammar, DecoderSession};

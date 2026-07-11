@@ -100,6 +100,30 @@ pub fn test_legend() -> Result<()> {
     }
 }
 
+/// The cargo-fuzz targets under `fuzz/fuzz_targets/`, kept in sync with that
+/// directory. A named list rather than a directory scan: the loop must run every
+/// target, and a new target is added here in the same change that adds the file.
+const FUZZ_TARGETS: &[&str] = &["accept_token", "allowed_mask", "schema_from_json"];
+
+/// Time-box every cargo-fuzz target for `secs` seconds each.
+///
+/// A loop over the target list (real control flow, so it lives in xtask, not the
+/// justfile — constitution §2). cargo-fuzz needs a nightly toolchain, invoked via
+/// `cargo +nightly fuzz run`; the fuzz crate is excluded from the workspace so the
+/// core stays stable-pinned and `forbid(unsafe)`-clean (ADR-0006). A crash in any
+/// target fails the whole task (fail-fast).
+///
+/// # Errors
+///
+/// Returns the first target's failure (a crash, or a missing nightly / cargo-fuzz).
+pub fn fuzz_ci(secs: u64) -> Result<()> {
+    let budget = format!("-max_total_time={secs}");
+    for target in FUZZ_TARGETS {
+        run("cargo", &["+nightly", "fuzz", "run", target, "--", &budget])?;
+    }
+    Ok(())
+}
+
 /// The minimum acceptable line-coverage percentage. Enforced as a hard floor so
 /// coverage can only ratchet upward. Tighten with human sign-off; never loosen.
 const COVERAGE_FLOOR_PCT: &str = "70";

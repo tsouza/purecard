@@ -105,7 +105,35 @@ a `CompiledGrammar`. Its surface: `allowed_mask()`, `accept_token()`,
 `is_complete()`, `reset()`. The `#[cfg(feature = "python")]` PyO3 bindings wrap
 exactly this.
 
+**Invariants (M5).** `is_complete()` is true iff **every frame is closed AND the
+last token is fully lexed at a value boundary** — derived from `step`, so it
+covers every value-terminal state (a trailing top-level identifier now completes),
+while a bare `|X` source deliberately does not. `accept_token` distinguishes an
+**out-of-range id** (`UnknownToken` — a host-contract violation) from an in-range,
+mask-respecting reject (`InadmissibleToken`), so a host can tell its own bug from
+routine masking; both leave the session untouched (§8.5 rollback).
+
 **Introduced by.** [`spec/architecture.md`](spec/architecture.md) §9.
+
+### Tokenizer self-check
+
+**What it is.** An opt-in, side-effect-free proof that a host-supplied `Vocab`
+can *express* grammar-legal queries — the guard against the invisible-soundness
+risk (overview §11) that a host's token → bytes disagreeing with the model's real
+tokenization silently breaks masking. `self_check`/`self_check_smoke` drive
+canonical queries *through tokens* (longest-match segmentation, then per-segment
+mask + accept, then `is_complete`), failing loud via a distinct `SelfCheckError`
+(never a `DecodeError`). Implemented in `src/selfcheck.rs`; no corpus is compiled
+into the core (the ~4-query `SMOKE` set is inline), and the full 5034-query
+round-trip is `tests/selfcheck_corpus.rs`.
+
+**Invariants.** A grammar-legal query the host vocab cannot segment, that
+dead-ends, or that never completes proves host-vocab vs model-tokenizer drift.
+The check is pure (const `&[u8]` samples, byte-slice matching, no I/O) and adds
+zero core dependencies.
+
+**Introduced by.** [`spec/overview.md`](spec/overview.md) §11; M5
+(`specs/m5-hardening.md`).
 
 ## Workflows
 

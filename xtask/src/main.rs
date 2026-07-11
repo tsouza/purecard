@@ -57,6 +57,11 @@ enum Command {
         /// Feature name; becomes `specs/<name>.md`.
         name: String,
     },
+    /// Time-box every cargo-fuzz target for `secs` seconds each (nightly).
+    FuzzCi {
+        /// Per-target time budget in seconds.
+        secs: u64,
+    },
 }
 
 fn main() -> Result<()> {
@@ -71,5 +76,6 @@ fn main() -> Result<()> {
         Command::PublicApi { bless } => tasks::public_api(bless),
         Command::NewFeature { name } => tasks::new_feature(&name),
         Command::Spec { name } => tasks::spec(&name),
+        Command::FuzzCi { secs } => tasks::fuzz_ci(secs),
     }
 }

@@ -177,8 +177,10 @@ impl<'g> DecoderSession<'g> {
     ///
     /// # Errors
     /// Returns [`DecodeError::UnexpectedEos`] if EOS is signalled before the
-    /// stream is complete, or [`DecodeError::InadmissibleToken`] if the token's
-    /// bytes dead-end the recognizer (including an out-of-range id).
+    /// stream is complete, [`DecodeError::UnknownToken`] if `id` is out of range
+    /// (a host-contract violation — no `Vocab` entry), or
+    /// [`DecodeError::InadmissibleToken`] if an in-range token's bytes dead-end
+    /// the recognizer (a legitimate, mask-respecting reject).
     pub fn accept_token(&mut self, id: u32) -> Result<(), DecodeError> {
         if id == self.grammar.eos_bit() {
             return if self.pda.is_accepting() {
@@ -187,8 +189,10 @@ impl<'g> DecoderSession<'g> {
                 Err(DecodeError::UnexpectedEos)
             };
         }
+        // An id with no `Vocab` entry (out of range) is a host-contract violation,
+        // reported distinctly from an in-range token the mask legitimately clears.
         let Some(bytes) = self.grammar.vocab().bytes(id) else {
-            return Err(DecodeError::InadmissibleToken { id });
+            return Err(DecodeError::UnknownToken { id });
         };
         // Fold into a clone and commit only on full success: a rejection never
         // touches `self.pda`, so no stack contents can be corrupted by a
@@ -412,11 +416,26 @@ mod tests {
     }
 
     #[test]
-    fn an_out_of_range_token_id_is_inadmissible() {
+    fn an_out_of_range_token_id_is_unknown_not_inadmissible() {
+        // An id with no `Vocab` entry is a host-contract violation — the distinct
+        // `UnknownToken`, not the mask-respecting `InadmissibleToken` an in-range
+        // dead-ending token raises.
         let grammar = CompiledGrammar::compile(token_vocab());
         let mut session = DecoderSession::new(&grammar);
         let err = session.accept_token(999).expect_err("no such token");
-        assert!(matches!(err, DecodeError::InadmissibleToken { id: 999 }));
+        assert!(matches!(err, DecodeError::UnknownToken { id: 999 }));
+        // The reserved EOS id (== vocab.len()) is the boundary: one past it is the
+        // first unknown id.
+        let first_unknown = grammar.eos_bit() + 1;
+        assert!(matches!(
+            session.accept_token(first_unknown),
+            Err(DecodeError::UnknownToken { id }) if id == first_unknown
+        ));
+        // An in-range closer that dead-ends stays `InadmissibleToken`.
+        assert!(matches!(
+            session.accept_token(3),
+            Err(DecodeError::InadmissibleToken { id: 3 })
+        ));
     }
 
     #[test]

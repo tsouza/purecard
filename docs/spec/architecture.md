@@ -92,6 +92,17 @@ Target: **mask generation ≤ a few hundred µs/token**, so it is never the bott
 
 For L2, additionally **cache per-(state, class-scope) identifier masks**: the set of schema-legal identifiers after `$x.` depends only on the class `$x` is bound to, so it can be memoized per (position, class) pair rather than recomputed every step.
 
+### 4.6 Shipped M5 baseline (the locked performance record)
+
+The criterion suite (`benches/allowed_mask.rs`) locks the shipped per-step baseline; the **enforced** regression guard is CodSpeed (the `bench` job — deterministic *instruction count*, walltime-independent, so it reproduces faithfully in CI). Wall-clock figures below are representative and machine-dependent — indicative shape, not the gate; CodSpeed's instruction-count delta is what fails a PR. Recommended CodSpeed threshold at first-lock: **±10 %** instruction count, ratcheted tighter over time (a PROTECTED gate only tightens). CodSpeed stays opt-in until the app is installed and `CODSPEED_ENABLED=true` is set.
+
+The families and what they establish:
+
+- **`allowed_mask`** — steady-state per step. Shallow and identifier positions are sub-µs; the deep-stack worst case (nested open frames, maximal context-dependent re-probe) is a few hundred µs — inside the **≤ a few hundred µs/token** target (§4.5), and dwarfed by the model's ms-scale forward pass.
+- **`accept_token`** — a whole-token advance is tens of ns (a byte-fold through a PDA clone).
+- **`cache_win`** — the M2 partition cache: a warm step (word-wise copy) is ~4 orders of magnitude cheaper than a cold first-visit build (which probes all ~150k tokens). This is why the lazy per-state cache is load-bearing, not an optimization.
+- **`l2_overhead`** — the schema-narrowing block at an identifier position adds a small constant over the L1 mask (the `intersect` plus the scope-legal set build); L2 ⊆ L1 by construction, so it only ever narrows.
+
 ---
 
 ## 9. Public API (Rust + PyO3) and integration boundary

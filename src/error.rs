@@ -35,18 +35,33 @@ pub enum DecodeError {
         stack_top: &'static str,
     },
 
-    /// A whole token was rejected by
-    /// [`accept_token`](crate::DecoderSession::accept_token), leaving the session
-    /// untouched (§8.5 rollback), so speculative masking is sound. Two cases
-    /// raise it: a **valid, non-EOS** token id whose raw bytes dead-end the
-    /// recognizer (so it cannot extend the stream) — every such id is cleared in
-    /// [`allowed_mask`](crate::DecoderSession::allowed_mask) — and an **unknown**
-    /// id with no entry in the host `Vocab` (out of range), which is inadmissible
-    /// before any byte is folded. A cleared **EOS** bit is the distinct
-    /// [`UnexpectedEos`](DecodeError::UnexpectedEos) case, not this one.
+    /// An **in-range** (`id < eos`), non-EOS token was rejected by
+    /// [`accept_token`](crate::DecoderSession::accept_token) because its raw bytes
+    /// dead-end the recognizer, so it cannot extend the stream. Every such id is
+    /// cleared in [`allowed_mask`](crate::DecoderSession::allowed_mask): a host
+    /// that respects the mask never triggers this — it is the *legitimate,
+    /// mask-respecting* rejection, distinct from a host-contract violation. The
+    /// session is left untouched (§8.5 rollback), so the host resamples. An
+    /// **out-of-range** id is the separate [`UnknownToken`](DecodeError::UnknownToken)
+    /// case, and a cleared **EOS** bit the separate
+    /// [`UnexpectedEos`](DecodeError::UnexpectedEos) case.
     #[error("token id {id} is inadmissible: its bytes dead-end the recognizer")]
     InadmissibleToken {
         /// The rejected token id.
+        id: u32,
+    },
+
+    /// A token `id` with **no entry in the host `Vocab`** (out of range: at or
+    /// past the reserved EOS id) was submitted to
+    /// [`accept_token`](crate::DecoderSession::accept_token). Unlike
+    /// [`InadmissibleToken`](DecodeError::InadmissibleToken) — an in-range token
+    /// the mask legitimately cleared — this signals a **host-contract
+    /// violation**: the host passed an id its own vocabulary cannot name, so it
+    /// ignored the mask or mis-sized it. Distinguishing it lets a host tell its
+    /// own bug apart from routine masking. The session is left untouched.
+    #[error("token id {id} is unknown: no entry in the host vocabulary")]
+    UnknownToken {
+        /// The out-of-range token id.
         id: u32,
     },
 
@@ -76,5 +91,23 @@ mod tests {
         assert!(shown.contains("0x2c"), "{shown}");
         assert!(shown.contains("AfterArrow"), "{shown}");
         assert!(shown.contains("Paren"), "{shown}");
+    }
+
+    #[test]
+    fn unknown_and_inadmissible_tokens_render_distinctly() {
+        // The two id-rejection variants must carry the id and read differently,
+        // so a host can tell its own contract violation (unknown) from a routine
+        // masked reject (inadmissible).
+        let unknown = DecodeError::UnknownToken { id: 42 }.to_string();
+        let inadmissible = DecodeError::InadmissibleToken { id: 42 }.to_string();
+        assert!(
+            unknown.contains("42") && unknown.contains("unknown"),
+            "{unknown}"
+        );
+        assert!(
+            inadmissible.contains("42") && inadmissible.contains("inadmissible"),
+            "{inadmissible}"
+        );
+        assert_ne!(unknown, inadmissible);
     }
 }

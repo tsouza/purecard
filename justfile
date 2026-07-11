@@ -80,10 +80,23 @@ test-mutation:
 # Fuzzing & benchmarking
 # ---------------------------------------------------------------------------
 
-# Run cargo-fuzz targets for a bounded time (default 60s per target).
-# Pass a target name to fuzz just one, e.g. `just fuzz greet`.
-fuzz target="" time="60":
-    cargo fuzz run {{ target }} -- -max_total_time={{ time }}
+# Run a cargo-fuzz target for a bounded time (default 60s). cargo-fuzz needs a
+# nightly toolchain (libfuzzer generates `unsafe`), so the fuzz crate is excluded
+# from the workspace and driven with `+nightly` here.
+# e.g. `just fuzz accept_token`, `just fuzz allowed_mask 300`.
+fuzz target time="60":
+    cargo +nightly fuzz run {{ target }} -- -max_total_time={{ time }}
+
+# Compile every fuzz target without running (catches bit-rot at zero run cost) —
+# the per-PR fuzz gate.
+fuzz-build:
+    cargo +nightly fuzz build
+
+# Time-box every fuzz target for `time` seconds each (default 60) — the bounded
+# per-PR / nightly fuzz run. Delegates the per-target loop to xtask (real control
+# flow → typed Rust, not inline shell; constitution §2).
+fuzz-ci time="60":
+    cargo xtask fuzz-ci {{ time }}
 
 # Criterion benchmarks. On CI these run under CodSpeed (see ci.yml).
 bench:

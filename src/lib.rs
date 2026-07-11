@@ -40,6 +40,7 @@ pub mod grammar;
 pub mod mask;
 pub mod recognizer;
 pub mod schema;
+pub mod selfcheck;
 pub mod session;
 pub mod vocab;
 
@@ -57,6 +58,7 @@ pub use grammar::pda::Pda;
 pub use mask::BitMask;
 pub use recognizer::ByteRecognizer;
 pub use schema::{Schema, SchemaError};
+pub use selfcheck::{SelfCheckError, self_check, self_check_smoke};
 pub use session::DecoderSession;
 pub use vocab::Vocab;
 

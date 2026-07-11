@@ -1,0 +1,42 @@
+[package]
+name = "purecard-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# cargo-fuzz marks this crate as a fuzzing crate so `cargo fuzz` discovers the
+# targets under `fuzz_targets/`.
+[package.metadata]
+cargo-fuzz = true
+
+# Excluded from the root workspace (see ../Cargo.toml [workspace].exclude): the
+# libfuzzer harness generates `unsafe` and needs nightly, which the pure core
+# forbids. Kept out-of-band so the core stays `#![forbid(unsafe_code)]`.
+[dependencies]
+libfuzzer-sys = "0.4.13"
+arbitrary = { version = "1.4.2", features = ["derive"] }
+purecard = { path = ".." }
+
+[[bin]]
+name = "accept_token"
+path = "fuzz_targets/accept_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "allowed_mask"
+path = "fuzz_targets/allowed_mask.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "schema_from_json"
+path = "fuzz_targets/schema_from_json.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1
