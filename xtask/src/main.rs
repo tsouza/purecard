@@ -37,6 +37,8 @@ enum Command {
     },
     /// Validate `release-plz.toml` against the actual workspace (config gate).
     ReleasePlzCheck,
+    /// Assert the published core stays dep-light and harness-free (ADR-0003).
+    CheckCoreDeplight,
     /// Snapshot / verify the public API surface via cargo-public-api (nightly).
     PublicApi {
         /// Update the committed baselines instead of checking against them.
@@ -62,6 +64,7 @@ fn main() -> Result<()> {
         Command::Sweep => tasks::sweep(),
         Command::Coverage { html } => tasks::coverage(html),
         Command::ReleasePlzCheck => tasks::release_plz_check(),
+        Command::CheckCoreDeplight => tasks::check_core_deplight(),
         Command::PublicApi { bless } => tasks::public_api(bless),
         Command::NewFeature { name } => tasks::new_feature(&name),
         Command::Spec { name } => tasks::spec(&name),

@@ -15,32 +15,20 @@
 //!
 //! ## Status
 //!
-//! Milestone **M0** (oracle harness). This ships the skeleton feedback loops the
-//! real decoder is built against:
-//!
-//! - the offline gold-corpus [`corpus`] loader and a throwaway byte
-//!   [`recognizer`] driven by [`replay_bytes`] — the wiring for the future §8.1
-//!   soundness test (which is token-level and arrives with M1);
-//! - the Legend [`engine`] completeness probe — a pure [`classify_return_type`]
-//!   plus a feature-gated live-HTTP client.
+//! Milestone **M0** (oracle harness). The shippable core is deliberately tiny
+//! and dependency-free: the [`GuaranteeLevel`] lattice and the [`vocab`] module's
+//! [`Vocab`] table (token id → raw bytes). Everything that drives the M0 feedback
+//! loops — the gold-corpus loader, the throwaway byte recognizer, and the Legend
+//! completeness probe — is test-oracle scaffolding that lives under `tests/`, not
+//! in the published crate, so `purecard` ships with no runtime dependencies (see
+//! `docs/decisions/0003-non-core-in-tests-deplight-core.md`).
 //!
 //! The byte-PDA grammar (M1), the mask cache (M2), the schema overlay (M3), and
 //! the PyO3 boundary (M4) land in later milestones.
 
-pub mod corpus;
-pub mod engine;
-pub mod error;
-pub mod recognizer;
 pub mod vocab;
 
-pub use corpus::{GoldRecord, load_gold};
-pub use engine::{ReturnTypeOutcome, classify_return_type};
-pub use error::{CorpusError, DecodeError};
-pub use recognizer::{ByteRecognizer, StubDecoder, replay_bytes};
 pub use vocab::Vocab;
-
-#[cfg(feature = "engine")]
-pub use engine::EngineClient;
 
 /// The nested guarantee levels a constrained decoder can offer, ordered from
 /// weakest (the largest set of queries) to strongest (the smallest).

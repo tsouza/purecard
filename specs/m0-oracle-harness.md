@@ -47,8 +47,8 @@ src/error.rs       thiserror error types (DecodeError, CorpusError).
 src/vocab.rs       Vocab (id→bytes + eos). No trie.
 src/recognizer.rs  ByteRecognizer trait + StubDecoder + replay_bytes helper.
 src/corpus.rs      GoldRecord (serde) + streaming load_gold(path) iterator.
-src/engine.rs      Default: ReturnTypeOutcome + pure classify_return_type(&Value).
-                   The EngineClient ureq I/O shim is #[cfg(feature = "engine")].
+src/legend.rs      Default: ReturnTypeOutcome + pure classify_return_type(&Value).
+                   The LegendClient ureq I/O shim is #[cfg(feature = "legend")].
 ```
 
 Rationale: this is the "minimal vertical slice" spine — one module per concept, no `DecoderSession` wrapper (see Decisions). Splitting errors into `DecodeError` (recognizer domain) and `CorpusError` (loader/IO domain) keeps each type honest about its own failure surface and matches the two independent concerns the harness bolts together.
@@ -197,7 +197,7 @@ loop — is a **default-feature pure function** with no `ureq`, so it is
 covered and mutation-tested. Only the live HTTP shim is feature-gated.
 
 ```rust
-// engine.rs — default feature, no ureq
+// legend.rs — default feature, no ureq
 use serde_json::Value;
 
 /// Outcome of a `lambdaReturnType` compile probe.
@@ -216,15 +216,15 @@ pub fn classify_return_type(resp: &Value) -> ReturnTypeOutcome { /* … */ }
 ```
 
 ```rust
-// engine.rs — #[cfg(feature = "engine")] block: the thin ureq I/O shim
+// legend.rs — #[cfg(feature = "legend")] block: the thin ureq I/O shim
 use std::time::Duration;
 
 /// Blocking client for the Legend Engine compile contract (§14).
-#[cfg(feature = "engine")]
-pub struct EngineClient { base: String }
+#[cfg(feature = "legend")]
+pub struct LegendClient { base: String }
 
-#[cfg(feature = "engine")]
-impl EngineClient {
+#[cfg(feature = "legend")]
+impl LegendClient {
     /// Base URL, e.g. "http://localhost:6300/api".
     pub fn new(base: impl Into<String>) -> Self { Self { base: base.into() } }
 
@@ -257,7 +257,7 @@ M0's surface is deliberately **not** the §9 recognizer API. The byte recognizer
 | Replay driver   | `replay_bytes(rec, &[u8])` (throwaway wiring)              | **Likely replaced** by a token-level replay that feeds tokens and checks `allowed_mask()` at each step.                                                         |
 | Vocab           | `Vocab` (id→bytes + eos)                                   | Gains trie/mask accessors (M2); `accept_token(id)` consumes it.                                                                                                 |
 | Corpus          | `GoldRecord` + `load_gold`                                 | Unchanged — the one piece that genuinely survives.                                                                                                              |
-| Engine          | `classify_return_type` (default) + `EngineClient` (gated)  | `classify_return_type` survives; the client gains grammarToJson + PMCD regen (M1+).                                                                             |
+| Engine          | `classify_return_type` (default) + `LegendClient` (gated)  | `classify_return_type` survives; the client gains grammarToJson + PMCD regen (M1+).                                                                             |
 
 M0 makes no claim to freeze the §9 API. What genuinely survives to M1 is the corpus loader (`GoldRecord` + `load_gold`) and the pure `classify_return_type`; the `ByteRecognizer` trait, `StubDecoder`, and `replay_bytes` are disposable scaffolding that prove the corpus-load + per-byte-stepping plumbing and MAY be discarded when the token-level §8.1 harness lands. The M1 soundness test is a **rewrite, not an extension** — accepted deliberately (see Decisions).
 
@@ -278,18 +278,18 @@ M0 makes no claim to freeze the §9 API. What genuinely survives to M1 is the co
 - `vocab.rs` — `from_byte_tokens` round-trip via `bytes`, `eos`, `len`/`is_empty`, out-of-range `bytes(id) == None`.
 - `recognizer.rs` — `StubDecoder` never dead over arbitrary bytes, `is_complete` always true, `consumed` counts, `reset` zeroes; `replay_bytes` returns the right length and (via a tiny test-only recognizer whose `accept_byte` returns `Err` on a chosen byte) surfaces `DeadState { offset, byte }` with the right fields.
 - `corpus.rs` — parse one canned valid line into a `GoldRecord` with expected fields; a malformed line yields `CorpusError::Json { line, .. }` with the correct line number.
-- `engine.rs` (default) — `classify_return_type` maps a canned success JSON to `ReturnTypeOutcome::ReturnType(_)` and a canned engine-error JSON to `CompileError(_)`; both arms asserted so a mutant swapping them is killed.
+- `legend.rs` (default) — `classify_return_type` maps a canned success JSON to `ReturnTypeOutcome::ReturnType(_)` and a canned engine-error JSON to `CompileError(_)`; both arms asserted so a mutant swapping them is killed.
 
 These keep all M0 decision logic — the classifier included — in default features, so it is covered (≥70% floor) and mutation-tested. The classification arms and the `DeadState` channel are exercised by real assertions, so a mutant that swaps the arms or neuters deadness is killed.
 
 ### Opt-in engine lane (completeness) — the no-skip mechanism
 
-`tests/engine_completeness.rs` begins with **`#![cfg(feature = "engine")]`** (file-level). The exact honesty mechanism: **cargo/nextest never *collect* these tests unless `--features engine` is passed** — the entire compilation unit is conditionally absent from the default build graph. There is **no `#[ignore]`, no runtime `return`, no weakened assertion** — nothing is silenced. The default gate's pass/fail is provably identical whether or not the engine exists, matching §14.4's opt-in/nightly recommendation.
+`tests/legend_completeness.rs` begins with **`#![cfg(feature = "legend")]`** (file-level). The exact honesty mechanism: **cargo/nextest never *collect* these tests unless `--features engine` is passed** — the entire compilation unit is conditionally absent from the default build graph. There is **no `#[ignore]`, no runtime `return`, no weakened assertion** — nothing is silenced. The default gate's pass/fail is provably identical whether or not the engine exists, matching §14.4's opt-in/nightly recommendation.
 
-- **`engine_client_reaches_lambda_return_type_endpoint`** — `EngineClient::health_wait(timeout)`, POST the canned protocol-JSON + PMCD fixtures (committed under `tests/fixtures/`), and assert a classified outcome is read back — `ReturnTypeOutcome::ReturnType(_) | CompileError(_)`. The fixtures are provisional placeholders (spec R4), so asserting a *specific* `ReturnType(_)` is deferred to M1 once they are regenerated from a real §14.2 roundtrip.
+- **`engine_client_reaches_lambda_return_type_endpoint`** — `LegendClient::health_wait(timeout)`, POST the canned protocol-JSON + PMCD fixtures (committed under `tests/fixtures/`), and assert a classified outcome is read back — `ReturnTypeOutcome::ReturnType(_) | CompileError(_)`. The fixtures are provisional placeholders (spec R4), so asserting a *specific* `ReturnType(_)` is deferred to M1 once they are regenerated from a real §14.2 roundtrip.
 - Driven by a `just test-engine` target: `docker compose -f corpus/legend-stack/docker-compose.yml up -d` → §14.1 health-wait → `cargo nextest run --features engine`.
 
-The completeness-loop *logic* — `classify_return_type` — lives in default features and is fully covered and mutation-tested (above), so the return-type/error split cannot pass vacuously. Only the live HTTP shim (`EngineClient`'s `ureq` POST + `health_wait`) is deferred behind `feature = "engine"`; it is pure I/O with nothing meaningful to mutation-test hermetically, and it removes nothing from the measured set. **Pre-merge, `just ci` runs `cargo clippy --all-features -- -D warnings`**, so `engine.rs` — the gated shim included — is compiled and linted (`missing_docs`, `unsafe`, clippy) on every PR with zero docker/network. That is the constitution §2 pre-merge counterpart; only the LIVE-engine POST stays nightly/opt-in per DOMAIN §14.4.
+The completeness-loop *logic* — `classify_return_type` — lives in default features and is fully covered and mutation-tested (above), so the return-type/error split cannot pass vacuously. Only the live HTTP shim (`LegendClient`'s `ureq` POST + `health_wait`) is deferred behind `feature = "legend"`; it is pure I/O with nothing meaningful to mutation-test hermetically, and it removes nothing from the measured set. **Pre-merge, `just ci` runs `cargo clippy --all-features -- -D warnings`**, so `legend.rs` — the gated shim included — is compiled and linted (`missing_docs`, `unsafe`, clippy) on every PR with zero docker/network. That is the constitution §2 pre-merge counterpart; only the LIVE-engine POST stays nightly/opt-in per DOMAIN §14.4.
 
 ## Dependency vetting
 
@@ -301,7 +301,7 @@ Rubric: `docs/methodology/overview.md` + the `dependency-vetting` skill. Prefer 
 | `serde_json`     | **Adopt**                                        | Already a workspace dep (xtask); a hand-rolled line splitter would have to reimplement full JSON string unescaping for the escaped `\n`/quotes inside `pure_text` — a bespoke parser owning the format's edge cases (constitution §4), rejected. |
 | `thiserror`      | **Adopt**                                        | Constitution §1 mandates it for the lib error enums.                                                                                                                                                                                             |
 | `ureq`           | **Adopt (feature-gated `engine`, default OFF)**  | Blocking one-shot POST; pure-Rust + rustls, tiny tree, actively maintained. `reqwest` (tokio/hyper/TLS) is rejected for a byte-level lib; `attohttpc` viable but `ureq` has the smaller footprint.                                               |
-| `anyhow`         | **Adopt (feature-gated `engine`, optional dep)** | Constitution §1 permits it at boundaries; an optional dep pulled in by `engine = ["dep:ureq", "dep:anyhow"]` and used solely by the gated `EngineClient` shim.                                                                                   |
+| `anyhow`         | **Adopt (feature-gated `engine`, optional dep)** | Constitution §1 permits it at boundaries; an optional dep pulled in by `engine = ["dep:ureq", "dep:anyhow"]` and used solely by the gated `LegendClient` shim.                                                                                   |
 
 **Write-our-own:** the recognizer, replay driver, and `Vocab` — trivial, domain-specific, no crate offers them. **Pin discipline:** all are added via `cargo add <name>` (no version) so the pin is the current crates.io release, verified at add-time per constitution §2; the exact versions land in the PR, not from memory.
 
@@ -310,7 +310,7 @@ Rubric: `docs/methodology/overview.md` + the `dependency-vetting` skill. Prefer 
 - **R1 — replay proves less than §8.1.** Byte-level replay is *not* token-id soundness; a green M0 gate can lull us into thinking the real §8.1 guarantee holds. *Mitigation:* the non-goal and the soundness-test doc comment state explicitly that token-id replay is deferred to M1+ once a host vocab ships. No claim of §8.1 soundness at M0.
 - **R2 — corpus path brittleness.** The soundness test hardcodes `corpus/gold_queries.jsonl` relative to the crate root. *Mitigation:* resolve via `env!("CARGO_MANIFEST_DIR")` so it is CWD-independent and reproducible in CI's detached-HEAD checkout (constitution §2 pre-merge/CI reproducibility).
 - **R3 — engine lane is amd64 + ~1.7 GB docker.** Can't run in the default hermetic gate. *Mitigation:* that is the point of the feature gate — the lane is opt-in (`just test-engine`), and the default gate is fully hermetic. Engine images are pinned (finos 4.113.0 / 0.195.0) per finding.
-- **R4 — canned engine fixtures are provisional placeholders, not a real roundtrip.** The committed `tests/fixtures/{lambda,model}.json` are hand-written PROVISIONAL placeholders (each carries a `_comment` saying so), **not** artifacts of a real §14.2 `grammarToJson -> lambdaReturnType` roundtrip. Against a live stack the engine lane will therefore return an HTTP 500 compile error until they are regenerated. *Mitigation:* regeneration from a real roundtrip is an M1 concern, tracked as a `ponytail:` deferral in `engine.rs` and `tests/engine_completeness.rs`; until then the lane asserts only that a classified outcome (return type **or** compile error) is read back, and the specific-`ReturnType` assertion is deferred to M1.
+- **R4 — canned engine fixtures are provisional placeholders, not a real roundtrip.** The committed `tests/fixtures/{lambda,model}.json` are hand-written PROVISIONAL placeholders (each carries a `_comment` saying so), **not** artifacts of a real §14.2 `grammarToJson -> lambdaReturnType` roundtrip. Against a live stack the engine lane will therefore return an HTTP 500 compile error until they are regenerated. *Mitigation:* regeneration from a real roundtrip is an M1 concern, tracked as a `ponytail:` deferral in `legend.rs` and `tests/legend_completeness.rs`; until then the lane asserts only that a classified outcome (return type **or** compile error) is read back, and the specific-`ReturnType` assertion is deferred to M1.
 
 **Rollout:** land behind default features with the engine lane off; `just ci` green pre-merge. The engine lane runs on demand locally and can later be promoted to a nightly CI job (cached/pinned images per constitution §2) without touching the default gate.
 
@@ -324,8 +324,8 @@ Ordered, each independently testable and independently committable:
 4. **`src/recognizer.rs`** — `ByteRecognizer`, `StubDecoder`, `replay_bytes` (single deadness channel via `accept_byte`'s `Err`) + unit tests (incl. a test recognizer whose `accept_byte` returns `Err` to exercise `DeadState`). *(testable: unit.)*
 5. **`src/corpus.rs`** — `GoldRecord`, `load_gold` streaming iterator + unit tests (valid + malformed line). *(testable: unit.)*
 6. **`tests/soundness_replay.rs`** — `gold_corpus_streams_and_replays_without_harness_error` (assert every item `Ok`, `count == EXPECTED_GOLD_RECORDS`) + `corpus_path_reports_dead_state` negative test; wire path via `CARGO_MANIFEST_DIR`. Run `just ci`; confirm ≥70% coverage + mutants green. *(testable: integration, satisfies G1/G2/G4.)*
-7. **`src/engine.rs`** — default-feature `ReturnTypeOutcome` + pure `classify_return_type(&Value)` with canned success/error JSON unit tests; the `#[cfg(feature="engine")]` `EngineClient` (`health_wait`, `lambda_return_type`) is a thin `ureq` shim that delegates classification to it. Add `cargo clippy --all-features -- -D warnings` to the `just ci` target so the shim is compiled + linted pre-merge (constitution §2). *(testable: classifier unit + mutation on default features; `cargo build --features engine`.)*
-8. **`tests/fixtures/`** + **`tests/engine_completeness.rs`** (`#![cfg(feature="engine")]`) + **justfile `test-engine`** (compose up + health-wait + `nextest --features engine`). *(testable: opt-in lane against a live stack, satisfies G3.)*
+7. **`src/legend.rs`** — default-feature `ReturnTypeOutcome` + pure `classify_return_type(&Value)` with canned success/error JSON unit tests; the `#[cfg(feature="legend")]` `LegendClient` (`health_wait`, `lambda_return_type`) is a thin `ureq` shim that delegates classification to it. Add `cargo clippy --all-features -- -D warnings` to the `just ci` target so the shim is compiled + linted pre-merge (constitution §2). *(testable: classifier unit + mutation on default features; `cargo build --features engine`.)*
+8. **`tests/fixtures/`** + **`tests/legend_completeness.rs`** (`#![cfg(feature="legend")]`) + **justfile `test-engine`** (compose up + health-wait + `nextest --features engine`). *(testable: opt-in lane against a live stack, satisfies G3.)*
 9. **`src/lib.rs`** — module decls + re-exports; keep `GuaranteeLevel`; confirm `#![forbid(unsafe_code)]` / `#![deny(missing_docs)]`. Final `just ci` green. *(testable: full gate.)*
 
 ## Decisions for the human
@@ -333,4 +333,4 @@ Ordered, each independently testable and independently committable:
 1. **`DecoderSession` wrapper — skip it. RESOLVED (yes, skip).** `api-shape-first` proposes a `DecoderSession<R>` struct bundling recognizer + vocab. Nothing at M0 needs the pairing (the vocab has no consumer, and replay drives a bare recognizer), so it is speculative surface that KISS/YAGNI say to omit. **Decision: ship the bare `ByteRecognizer` + `replay_bytes` helper; add a session type in M1/M2 if a real consumer appears.**
 2. **Trait shape — keep bare `ByteRecognizer` as throwaway scaffolding. RESOLVED.** The alternative was to add `accept_token` / `allowed_mask` / a snapshot checkpoint to the trait now (critique option b). We instead keep the byte-committing `ByteRecognizer` + `replay_bytes` as disposable M0 wiring, **consciously conceding that M0's recognizer is throwaway and M1's token-level §8.1 harness may replace it wholesale rather than extend it** (critique option a). This trades a false "M1 extends, not rewrites" claim for honest scaffolding.
 3. **Split vs single error type — split (recommended).** `DecodeError` (recognizer) and `CorpusError` (loader/IO) vs one unified `Error`. The two failure surfaces are genuinely independent and the recognizer trait's `Result<(), DecodeError>` should not carry corpus-IO variants into M1. **Recommendation: two types.** (Alternative: one `Error` enum — marginally fewer lines, but leaks IO variants into the recognizer contract.)
-4. **Engine module location — in the lib behind `feature = "engine"` (recommended).** Alternative is a separate `purecard-engine` crate. A feature gate is the smallest correct scaffold, keeps the default build hermetic and dep-light, and matches the finding's plan; a second crate is premature workspace ceremony at M0. **Recommendation: feature-gated module; revisit a split crate only if the engine surface grows non-trivially in M1+.**
+4. **Engine module location — in the lib behind `feature = "legend"` (recommended).** Alternative is a separate `purecard-engine` crate. A feature gate is the smallest correct scaffold, keeps the default build hermetic and dep-light, and matches the finding's plan; a second crate is premature workspace ceremony at M0. **Recommendation: feature-gated module; revisit a split crate only if the engine surface grows non-trivially in M1+.**

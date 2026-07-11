@@ -1,19 +1,13 @@
-# cargo-mutants scope. Mutation testing verifies that unit tests actually catch
-# regressions, so it targets the pure logic layers (domain/app/infra), which are
-# unit-tested. Excluded:
-#   * xtask/**          — the dev/CI task orchestrator, not shipped product code
-#                         (also excluded from the coverage floor).
-#   * crates/server/**  — the composition root: socket-binding `serve`, tracing
-#                         init and router assembly are integration-level wiring,
-#                         not unit-mutation-testable without a live server.
-# Re-include server once it has integration tests exercising that wiring.
-exclude_globs = ["xtask/**", "crates/server/**"]
-
-# `EngineClient` is the `#[cfg(feature = "engine")]` live-HTTP I/O shim
-# (`health_wait`, `lambda_return_type`). It is NOT compiled in the hermetic
-# default-feature build that `cargo mutants` runs, so its mutants can only ever
-# report MISSED — a false negative, not a real coverage gap. It is instead
-# linted on every PR via `cargo clippy --all-features` and exercised live by the
-# nightly/opt-in `engine` lane (`just test-engine`). The pure decision logic it
-# delegates to — `classify_return_type` — stays fully mutation-tested here.
-exclude_re = ["EngineClient"]
+# cargo-mutants scope. Mutation testing verifies that the test suite actually
+# catches regressions, so it targets the pure logic that ships in `src/` — at M0
+# that is `GuaranteeLevel` (lib.rs) and `Vocab` (vocab.rs). Excluded:
+#   * xtask/** — the dev/CI task orchestrator, not shipped product code (also
+#                excluded from the coverage floor).
+#
+# The oracle harness (recognizer, corpus loader, Legend classifier/client) now
+# lives under `tests/` as dev-only code (ADR-0003), outside the `src/` surface
+# `cargo mutants` targets, so the old `LegendClient` exclusion is gone: the
+# `#[cfg(feature = "legend")]` client is not compiled in the default-feature
+# mutants build, and the pure `classify_return_type` it delegates to is
+# mutation-tested by the always-on `tests/classify_oracle.rs` binary.
+exclude_globs = ["xtask/**"]

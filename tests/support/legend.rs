@@ -1,9 +1,9 @@
 //! Legend Engine completeness probe (`DOMAIN.md` §8.2, §14).
 //!
 //! The response→outcome classification — the actual point of the completeness
-//! loop — is a pure, default-feature function ([`classify_return_type`]), so it
-//! is covered and mutation-tested. Only the live-HTTP client (`EngineClient`)
-//! is behind the `engine` feature; it is a thin `ureq` shim that delegates the
+//! loop — is a pure, always-compiled function ([`classify_return_type`]), so it
+//! is covered and mutation-tested. Only the live-HTTP client (`LegendClient`)
+//! is behind the `legend` feature; it is a thin `ureq` shim that delegates the
 //! decision back to the pure classifier.
 
 use serde_json::Value;
@@ -43,10 +43,10 @@ pub fn classify_return_type(resp: &Value) -> ReturnTypeOutcome {
     }
 }
 
-#[cfg(feature = "engine")]
-pub use client::EngineClient;
+#[cfg(feature = "legend")]
+pub use client::LegendClient;
 
-#[cfg(feature = "engine")]
+#[cfg(feature = "legend")]
 mod client {
     use super::{ReturnTypeOutcome, classify_return_type};
     use serde_json::Value;
@@ -60,11 +60,11 @@ mod client {
     const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
     /// Blocking client for the Legend Engine compile contract (§14).
-    pub struct EngineClient {
+    pub struct LegendClient {
         base: String,
     }
 
-    impl EngineClient {
+    impl LegendClient {
         /// Create a client for the engine API base, e.g.
         /// `"http://localhost:6300/api"`.
         pub fn new(base: impl Into<String>) -> Self {
@@ -92,10 +92,9 @@ mod client {
                     .http_status_as_error(false)
                     .build()
                     .call()
+                    && resp.status().is_success()
                 {
-                    if resp.status().is_success() {
-                        return Ok(());
-                    }
+                    return Ok(());
                 }
                 if Instant::now() >= deadline {
                     anyhow::bail!("engine not healthy at {url} within {timeout:?}");

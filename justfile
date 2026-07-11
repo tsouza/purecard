@@ -89,13 +89,13 @@ fuzz target="" time="60":
 bench:
     cargo bench --workspace
 
-# Engine-backed completeness lane (opt-in; DOMAIN §8.2/§14.4). Needs docker +
-# the pinned Legend stack. Brings the stack up, then runs the `engine`-feature
+# Legend-backed completeness lane (opt-in; DOMAIN §8.2/§14.4). Needs docker +
+# the pinned Legend stack. Brings the stack up, then runs the `legend`-feature
 # tests (each health-waits the engine itself). NOT part of the hermetic `just
 # ci`; run on demand or nightly on an x86 runner.
-test-engine:
+test-legend:
     docker compose -f corpus/legend-stack/docker-compose.yml up -d
-    cargo nextest run --features engine
+    cargo nextest run --features legend
 
 # ---------------------------------------------------------------------------
 # Coverage, supply-chain & API-stability gates
@@ -116,6 +116,12 @@ deny:
 # Unused-dependency scan.
 machete:
     cargo machete
+
+# Assert the published core stays dep-light and harness-free (ADR-0003): empty
+# `[dependencies]` + no tests/ or corpus/ paths in `cargo package --list`.
+# Delegates the parse + packaging check to xtask.
+check-core-deplight:
+    cargo xtask check-core-deplight
 
 # Validate release-plz.toml against the workspace, so config drift fails a PR
 # instead of the post-merge trunk run. Delegates to xtask.

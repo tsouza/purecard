@@ -1,7 +1,7 @@
-#![cfg(feature = "engine")]
+#![cfg(feature = "legend")]
 //! Engine-backed completeness lane — opt-in (`DOMAIN.md` §8.2, §14.4).
 //!
-//! Compiled and run ONLY under `--features engine` (via `just test-engine`)
+//! Compiled and run ONLY under `--features legend` (via `just test-legend`)
 //! against a live Legend stack. The entire compilation unit is absent from the
 //! default build graph, so the hermetic `just ci` gate never collects it — no
 //! `#[ignore]`, no runtime skip, no weakened assertion.
@@ -9,7 +9,12 @@
 use std::path::Path;
 use std::time::Duration;
 
-use purecard::{EngineClient, ReturnTypeOutcome};
+// The client + classifier live in the oracle harness (ADR-0003). Pull the module
+// in as a crate-local sibling; `--features legend` compiles its `LegendClient`.
+#[path = "support/legend.rs"]
+mod legend;
+
+use legend::{LegendClient, ReturnTypeOutcome};
 
 /// The engine API base the pinned `corpus/legend-stack` exposes.
 const ENGINE_BASE: &str = "http://localhost:6300/api";
@@ -33,7 +38,7 @@ fn engine_client_reaches_lambda_return_type_endpoint() {
     // query and *read the result*: the call reaches the engine and returns a
     // classified outcome (a ReturnType, or a CompileError from the placeholder).
     // Asserting a specific ReturnType is deferred to M1 with the real fixtures.
-    let client = EngineClient::new(ENGINE_BASE);
+    let client = LegendClient::new(ENGINE_BASE);
     client
         .health_wait(HEALTH_TIMEOUT)
         .expect("Legend engine healthy");

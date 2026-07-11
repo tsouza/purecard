@@ -9,7 +9,20 @@
 
 use std::path::PathBuf;
 
-use purecard::{ByteRecognizer, DecodeError, StubDecoder, load_gold, replay_bytes};
+// The M0 oracle harness lives under `tests/support/` (ADR-0003), not in the
+// published `purecard` crate. Pull the modules in as crate-local siblings so
+// `recognizer`/`corpus` resolve their `use crate::error::…` against this binary's
+// own root — no code the published crate doesn't need is compiled here.
+#[path = "support/corpus.rs"]
+mod corpus;
+#[path = "support/error.rs"]
+mod error;
+#[path = "support/recognizer.rs"]
+mod recognizer;
+
+use corpus::load_gold;
+use error::DecodeError;
+use recognizer::{ByteRecognizer, StubDecoder, replay_bytes};
 
 /// The committed corpus record count. An exact named constant, not a `> 5000`
 /// magic literal (constitution §4): both shrinkage and per-line corruption must
