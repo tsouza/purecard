@@ -1,10 +1,21 @@
-# cargo-mutants scope. Mutation testing verifies that unit tests actually catch
-# regressions, so it targets the pure logic layers (domain/app/infra), which are
-# unit-tested. Excluded:
-#   * xtask/**          — the dev/CI task orchestrator, not shipped product code
-#                         (also excluded from the coverage floor).
-#   * crates/server/**  — the composition root: socket-binding `serve`, tracing
-#                         init and router assembly are integration-level wiring,
-#                         not unit-mutation-testable without a live server.
-# Re-include server once it has integration tests exercising that wiring.
-exclude_globs = ["xtask/**", "crates/server/**"]
+# cargo-mutants scope. Mutation testing verifies that the test suite actually
+# catches regressions, so it targets the pure logic that ships in `src/` — at M0
+# that is `GuaranteeLevel` (lib.rs) and `Vocab` (vocab.rs). Excluded:
+#   * xtask/** — the dev/CI task orchestrator, not shipped product code (also
+#                excluded from the coverage floor).
+#
+# The oracle harness (recognizer, corpus loader, Legend classifier/client) now
+# lives under `tests/` as dev-only code (ADR-0003), outside the `src/` surface
+# `cargo mutants` targets, so the old `LegendClient` exclusion is gone: the
+# `#[cfg(feature = "legend")]` client is not compiled in the default-feature
+# mutants build, and the pure `classify_return_type` it delegates to is
+# mutation-tested by the always-on `tests/classify_oracle.rs` binary.
+#
+# `examine_globs` is an explicit allowlist, not a denylist: mutation is confined
+# to the shipped dep-light core under `src/` (lib.rs + vocab.rs). An allowlist
+# is the policy-matching form — a bare `exclude_globs = ["xtask/**"]` would leave
+# `tests/` harness helpers eligible, mutating dev-only code the floor never meant
+# to cover. `xtask/**` stays excluded for defense in depth (it is outside `src/`
+# regardless).
+examine_globs = ["src/**/*.rs"]
+exclude_globs = ["xtask/**"]

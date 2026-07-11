@@ -15,9 +15,20 @@
 //!
 //! ## Status
 //!
-//! This is milestone **M0** (skeleton). The decoder — vocabulary ingestion, the
-//! byte-level pushdown automaton, the schema overlay, and the PyO3 boundary —
-//! lands across the milestones tracked in `docs/spec/overview.md` (§10).
+//! Milestone **M0** (oracle harness). The shippable core is deliberately tiny
+//! and dependency-free: the [`GuaranteeLevel`] lattice and the [`vocab`] module's
+//! [`Vocab`] table (token id → raw bytes). Everything that drives the M0 feedback
+//! loops — the gold-corpus loader, the throwaway byte recognizer, and the Legend
+//! completeness probe — is test-oracle scaffolding that lives under `tests/`, not
+//! in the published crate, so `purecard` ships with no runtime dependencies (see
+//! `docs/decisions/0003-non-core-in-tests-deplight-core.md`).
+//!
+//! The byte-PDA grammar (M1), the mask cache (M2), the schema overlay (M3), and
+//! the PyO3 boundary (M4) land in later milestones.
+
+pub mod vocab;
+
+pub use vocab::Vocab;
 
 /// The nested guarantee levels a constrained decoder can offer, ordered from
 /// weakest (the largest set of queries) to strongest (the smallest).

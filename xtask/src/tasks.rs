@@ -19,10 +19,16 @@ fn validate_name(name: &str, usage: &str) -> Result<()> {
     Ok(())
 }
 
-/// Full local CI pipeline, fail-fast: format check, then lint, then test.
+/// Full local CI pipeline, fail-fast: format check, lint (default features),
+/// lint with all features, the dep-light core gate, then test.
 ///
 /// Mirrors the ordering used in the CI workflow so a green `xtask ci` locally
-/// is a strong predictor of a green pipeline.
+/// is a strong predictor of a green pipeline. The second clippy pass runs
+/// `--all-features` so feature-gated boundaries (e.g. the `legend` HTTP shim in
+/// `tests/support/legend.rs`) are compiled and linted pre-merge with zero infra
+/// (constitution §2), even though the live-Legend test lane itself is
+/// opt-in/nightly. [`check_core_deplight`] runs before the test step so a
+/// packaging regression fails fast, ahead of the slower test run.
 pub fn ci() -> Result<()> {
     run_cargo_steps(&[
         &["fmt", "--all", "--check"],
@@ -34,8 +40,18 @@ pub fn ci() -> Result<()> {
             "-D",
             "warnings",
         ],
-        &["test", "--workspace", "--all-targets"],
-    ])
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    ])?;
+    check_core_deplight()?;
+    run("cargo", &["test", "--workspace", "--all-targets"])
 }
 
 /// Run the structural / hygiene sweep: ast-grep guardrail rules over the tree.
@@ -47,6 +63,41 @@ pub fn ci() -> Result<()> {
 pub fn sweep() -> Result<()> {
     // `sg scan` reads sgconfig.yml at the repo root and applies every rule.
     run("ast-grep", &["scan"])
+}
+
+/// Docker Compose file for the pinned Legend engine stack.
+const LEGEND_COMPOSE_FILE: &str = "corpus/legend-stack/docker-compose.yml";
+
+/// Run the opt-in Legend completeness lane with guaranteed teardown.
+///
+/// Brings the pinned Legend stack up, runs the `legend`-feature tests, then
+/// **always** tears the stack down — even when the tests fail — so a red run
+/// never leaves containers running. Encoding up→test→teardown here (rather than
+/// as a shell `trap` in the recipe) keeps the justfile free of non-trivial shell
+/// (constitution §2). The test result is propagated after teardown so a failure
+/// still reddens the lane.
+///
+/// # Errors
+///
+/// Returns the test failure if the tests fail; otherwise a teardown failure if
+/// `docker compose down` fails. If *both* fail, the test failure is returned
+/// with the teardown failure attached as context — a leftover-container failure
+/// is never silently dropped, since surfacing it is the whole point.
+pub fn test_legend() -> Result<()> {
+    run(
+        "docker",
+        &["compose", "-f", LEGEND_COMPOSE_FILE, "up", "-d"],
+    )?;
+    // Capture, do NOT `?`-return: teardown must run regardless of the outcome.
+    let tested = run("cargo", &["nextest", "run", "--features", "legend"]);
+    let torn_down = run("docker", &["compose", "-f", LEGEND_COMPOSE_FILE, "down"]);
+    match (tested, torn_down) {
+        (Err(test_err), Err(teardown_err)) => Err(test_err.context(format!(
+            "legend tests failed AND stack teardown failed (containers may be left running): {teardown_err:#}"
+        ))),
+        (Err(test_err), Ok(())) => Err(test_err),
+        (Ok(()), teardown) => teardown,
+    }
 }
 
 /// The minimum acceptable line-coverage percentage. Enforced as a hard floor so
@@ -132,18 +183,16 @@ fn release_plz_override_names(toml_src: &str) -> Vec<String> {
         if !in_package {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("name") {
-            if let Some(value) = rest.trim_start().strip_prefix('=') {
-                // Take only the first quoted token, so a trailing inline comment
-                // (`name = "domain" # note`) doesn't leak into the parsed name.
-                if let Some(name) = value
-                    .trim()
-                    .strip_prefix('"')
-                    .and_then(|v| v.split('"').next())
-                {
-                    names.push(name.to_string());
-                }
-            }
+        // Take only the first quoted token, so a trailing inline comment
+        // (`name = "domain" # note`) doesn't leak into the parsed name.
+        if let Some(rest) = trimmed.strip_prefix("name")
+            && let Some(value) = rest.trim_start().strip_prefix('=')
+            && let Some(name) = value
+                .trim()
+                .strip_prefix('"')
+                .and_then(|v| v.split('"').next())
+        {
+            names.push(name.to_string());
         }
     }
     names
@@ -173,6 +222,127 @@ fn missing_overrides(overrides: &[String], members: &[String]) -> Vec<String> {
         .filter(|name| !members.iter().any(|member| member == *name))
         .cloned()
         .collect()
+}
+
+/// Path to the published core crate's manifest, relative to the workspace root.
+const CORE_MANIFEST: &str = "Cargo.toml";
+
+/// Header of the `[dependencies]` table whose emptiness the dep-light gate
+/// enforces (distinct from `[dev-dependencies]` / `[workspace.dependencies]`).
+const CORE_DEPS_TABLE: &str = "[dependencies]";
+
+/// Header prefix of a per-dependency sub-table (`[dependencies.serde]`). This is
+/// TOML's other spelling for a core dependency — a `[dependencies.<name>]` table
+/// declares `<name>` just as a `<name> = …` line in `[dependencies]` does — so
+/// the gate must treat it as a runtime dependency, not skip past it.
+const CORE_DEPS_SUBTABLE_PREFIX: &str = "[dependencies.";
+
+/// Packaged-path prefixes the published crate must never ship: the oracle
+/// harness (`tests/`) and the gold corpus (`corpus/`) are dev-only.
+const NON_CORE_PACKAGE_PREFIXES: &[&str] = &["tests/", "corpus/"];
+
+/// Fix-the-system gate: assert the published `purecard` core stays dep-light and
+/// ships no oracle-harness code (ADR-0003).
+///
+/// Two invariants, both machine-checked so "src/ is core only" is enforced, not
+/// merely documented:
+///
+/// 1. the crate's `[dependencies]` table is empty — every harness dependency
+///    (`serde`, `serde_json`, `thiserror`, `anyhow`, `ureq`) is a
+///    `[dev-dependency]`, so it never enters a downstream consumer's resolution
+///    graph;
+/// 2. `cargo package --list` names no file under `tests/` or `corpus/`, so a
+///    change to the `include` list cannot smuggle the harness into the tarball.
+///
+/// # Errors
+///
+/// Returns an error if the manifest cannot be read, the `[dependencies]` table
+/// is non-empty, or `cargo package --list` lists a non-core path.
+pub fn check_core_deplight() -> Result<()> {
+    let manifest = std::fs::read_to_string(CORE_MANIFEST)
+        .with_context(|| format!("reading {CORE_MANIFEST}"))?;
+    let deps = core_dependency_entries(&manifest);
+    if !deps.is_empty() {
+        anyhow::bail!(
+            "the published `purecard` core must keep an empty `[dependencies]` table \
+             (M0 core is GuaranteeLevel + Vocab, zero runtime deps), but found: {}. \
+             Move harness deps to `[dev-dependencies]`.",
+            deps.join(", ")
+        );
+    }
+
+    // `--allow-dirty` so the gate runs in the local pre-commit `just ci` flow (an
+    // uncommitted tree) exactly as it does on CI's clean checkout; `--list` only
+    // reports the file set, it packages nothing.
+    let listed = run_stdout(
+        "cargo",
+        &["package", "--list", "--allow-dirty", "-p", "purecard"],
+    )?;
+    let leaked: Vec<&str> = listed
+        .lines()
+        .map(str::trim)
+        .filter(|path| {
+            NON_CORE_PACKAGE_PREFIXES
+                .iter()
+                .any(|prefix| path.starts_with(prefix))
+        })
+        .collect();
+    if !leaked.is_empty() {
+        anyhow::bail!(
+            "the published `purecard` package must ship no oracle-harness or corpus \
+             files, but `cargo package --list` includes: {}. Check the `include` list \
+             in {CORE_MANIFEST}.",
+            leaked.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Names of every dependency declared in the crate's `[dependencies]` table.
+///
+/// A hand scan in the style of [`release_plz_override_names`] rather than a TOML
+/// dependency: the check only needs to know whether that one table's body holds
+/// any entry, so it walks lines from the table header to the next `[table]`,
+/// skipping comments and blanks. It counts both TOML spellings of a core
+/// dependency: an inline entry under `[dependencies]` (`name = …` /
+/// `name.workspace = …`, the token before the first `=` or `.`) **and** a
+/// per-dependency sub-table header `[dependencies.<name>]` — the latter declares
+/// `<name>` too, so skipping it would let a runtime dep slip past the gate.
+fn core_dependency_entries(toml_src: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut in_deps = false;
+    for line in toml_src.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            // A `[dependencies.<name>]` header is itself a dependency
+            // declaration; record `<name>` and leave `in_deps` false so the
+            // sub-table's own fields (`version`, `features`, …) aren't miscounted.
+            if let Some(name) = subtable_dependency_name(trimmed) {
+                entries.push(name);
+            }
+            in_deps = trimmed == CORE_DEPS_TABLE;
+            continue;
+        }
+        if !in_deps || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = trimmed.split(['=', '.']).next() {
+            let name = name.trim();
+            if !name.is_empty() {
+                entries.push(name.to_string());
+            }
+        }
+    }
+    entries
+}
+
+/// Extract `<name>` from a `[dependencies.<name>]` sub-table header, or `None`
+/// for any other table header. The name is the segment between the prefix and
+/// the next `.` or the closing `]`.
+fn subtable_dependency_name(header: &str) -> Option<String> {
+    let rest = header.strip_prefix(CORE_DEPS_SUBTABLE_PREFIX)?;
+    let name = rest.split(['.', ']']).next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Public library crates whose API surface is snapshotted.
@@ -446,5 +616,64 @@ release = false
         let overrides = ["domain".to_string(), "xtask".to_string()];
         let members = ["domain".to_string(), "xtask".to_string()];
         assert!(missing_overrides(&overrides, &members).is_empty());
+    }
+
+    #[test]
+    fn core_dependency_entries_reads_both_key_forms() {
+        // `name = …` and `name.workspace = …` both yield the bare dependency
+        // name; the scan stops at the next table so `[dev-dependencies]` is out.
+        let src = "\
+[package]
+name = \"purecard\"
+
+[dependencies]
+serde = { version = \"1\", features = [\"derive\"] }
+anyhow.workspace = true
+
+[dev-dependencies]
+ureq = \"3\"
+";
+        assert_eq!(core_dependency_entries(src), ["serde", "anyhow"]);
+    }
+
+    #[test]
+    fn core_dependency_entries_is_empty_for_a_comment_only_table() {
+        // A comment/blank-only `[dependencies]` body is the dep-light core state
+        // the gate demands — it must parse to no entries.
+        let src = "\
+[dependencies]
+# empty by design — the core is dependency-free.
+
+[dev-dependencies]
+serde = \"1\"
+";
+        assert!(core_dependency_entries(src).is_empty());
+    }
+
+    #[test]
+    fn core_dependency_entries_detects_subtable_form() {
+        // `[dependencies.serde]` is a valid TOML spelling of a core dependency;
+        // the gate must catch it, not walk past the header. Its own fields
+        // (`version`, `features`) are the sub-table's body, not new deps.
+        let src = "\
+[package]
+name = \"purecard\"
+
+[dependencies.serde]
+version = \"1\"
+features = [\"derive\"]
+
+[dev-dependencies]
+ureq = \"3\"
+";
+        assert_eq!(core_dependency_entries(src), ["serde"]);
+    }
+
+    #[test]
+    fn core_dependency_entries_ignores_other_dependency_tables() {
+        // Only the bare `[dependencies]` table is the core surface; a
+        // `[dev-dependencies]` or `[workspace.dependencies]` entry must not count.
+        let src = "[dev-dependencies]\nserde = \"1\"\n\n[workspace.dependencies]\nanyhow = \"1\"\n";
+        assert!(core_dependency_entries(src).is_empty());
     }
 }
