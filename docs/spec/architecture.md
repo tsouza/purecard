@@ -98,7 +98,7 @@ The criterion suite (`benches/allowed_mask.rs`) locks the shipped per-step basel
 
 The families and the *relative* cost each establishes (no absolute figures are quoted here: there is no gate asserting a hand-copied number against the bench output, so only the shape is stated — the bench itself holds the measurements):
 
-- **`allowed_mask`** — steady-state per step, and the cheapest at shallow and identifier positions. The deep-stack worst case (nested open frames, maximal context-dependent re-probe) is the costliest per-step path, but stays inside the **≤ a few hundred µs/token** design target (§4.5) and is dominated by the model's forward pass.
+- **`allowed_mask`** — steady-state per step, and the cheapest at shallow and identifier positions. The deep-stack worst case (nested open frames, maximal context-dependent re-probe) is the costliest per-step path; its design budget is **≤ a few hundred µs/token** (§4.5) — a target the bench measures against, not a guarantee asserted here — and that budget is itself dwarfed by the model's forward pass.
 - **`accept_token`** — a whole-token advance is cheap: a byte-fold through a PDA clone.
 - **`cache_win`** — the M2 partition cache: a warm step (word-wise copy) is dramatically cheaper than a cold first-visit build (which probes the whole ~150k-token vocabulary). This is why the lazy per-state cache is load-bearing, not an optimization.
 - **`l2_overhead`** — the schema-narrowing block at an identifier position adds a small constant over the L1 mask (the `intersect` plus the scope-legal set build); L2 ⊆ L1 by construction, so it only ever narrows.
