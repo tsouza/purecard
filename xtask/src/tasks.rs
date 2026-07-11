@@ -241,14 +241,24 @@ const CORE_DEPS_SUBTABLE_PREFIX: &str = "[dependencies.";
 /// harness (`tests/`) and the gold corpus (`corpus/`) are dev-only.
 const NON_CORE_PACKAGE_PREFIXES: &[&str] = &["tests/", "corpus/"];
 
+/// The core's runtime-dependency allowlist: the *only* crates permitted in the
+/// published `purecard` crate's `[dependencies]` table. `thiserror` is the
+/// decoder's library error-type crate (constitution §1; `DecodeError` in
+/// `src/error.rs`, ADR-0004) — the core's first, anticipated runtime dep. Every
+/// other dependency must be a `[dev-dependency]`. This is a PROTECTED tightening
+/// of the former "table must be empty" rule, never a disable: a dep outside this
+/// set still fails the gate, and the set only ever shrinks toward stricter.
+const CORE_DEP_ALLOWLIST: &[&str] = &["thiserror"];
+
 /// Fix-the-system gate: assert the published `purecard` core stays dep-light and
 /// ships no oracle-harness code (ADR-0003).
 ///
 /// Two invariants, both machine-checked so "src/ is core only" is enforced, not
 /// merely documented:
 ///
-/// 1. the crate's `[dependencies]` table is empty — every harness dependency
-///    (`serde`, `serde_json`, `thiserror`, `anyhow`, `ureq`) is a
+/// 1. the crate's `[dependencies]` table holds only allowlisted runtime deps
+///    ([`CORE_DEP_ALLOWLIST`] — currently just `thiserror`); every harness
+///    dependency (`serde`, `serde_json`, `anyhow`, `ureq`) stays a
 ///    `[dev-dependency]`, so it never enters a downstream consumer's resolution
 ///    graph;
 /// 2. `cargo package --list` names no file under `tests/` or `corpus/`, so a
@@ -257,17 +267,20 @@ const NON_CORE_PACKAGE_PREFIXES: &[&str] = &["tests/", "corpus/"];
 /// # Errors
 ///
 /// Returns an error if the manifest cannot be read, the `[dependencies]` table
-/// is non-empty, or `cargo package --list` lists a non-core path.
+/// holds a dependency outside [`CORE_DEP_ALLOWLIST`], or `cargo package --list`
+/// lists a non-core path.
 pub fn check_core_deplight() -> Result<()> {
     let manifest = std::fs::read_to_string(CORE_MANIFEST)
         .with_context(|| format!("reading {CORE_MANIFEST}"))?;
     let deps = core_dependency_entries(&manifest);
-    if !deps.is_empty() {
+    let disallowed = disallowed_core_deps(&deps, CORE_DEP_ALLOWLIST);
+    if !disallowed.is_empty() {
         anyhow::bail!(
-            "the published `purecard` core must keep an empty `[dependencies]` table \
-             (M0 core is GuaranteeLevel + Vocab, zero runtime deps), but found: {}. \
-             Move harness deps to `[dev-dependencies]`.",
-            deps.join(", ")
+            "the published `purecard` core's `[dependencies]` table may hold only the \
+             allowlisted runtime deps {{ {} }} (ADR-0004), but found: {}. Move harness \
+             deps to `[dev-dependencies]`.",
+            CORE_DEP_ALLOWLIST.join(", "),
+            disallowed.join(", ")
         );
     }
 
@@ -334,6 +347,16 @@ fn core_dependency_entries(toml_src: &str) -> Vec<String> {
         }
     }
     entries
+}
+
+/// Core `[dependencies]` entries not on `allowlist` — the deps that must fail the
+/// dep-light gate. An empty result means the table stays within the allowlist.
+fn disallowed_core_deps(entries: &[String], allowlist: &[&str]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|dep| !allowlist.contains(&dep.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Extract `<name>` from a `[dependencies.<name>]` sub-table header, or `None`
@@ -667,6 +690,32 @@ features = [\"derive\"]
 ureq = \"3\"
 ";
         assert_eq!(core_dependency_entries(src), ["serde"]);
+    }
+
+    #[test]
+    fn disallowed_core_deps_admits_the_allowlist_and_flags_the_rest() {
+        // `thiserror` is on the allowlist; `serde` is not, so only `serde` is
+        // reported. This pins the M1 tightening: the gate permits the intended
+        // core dep set exactly, not "any dep" and not "no dep".
+        let entries = ["thiserror".to_string(), "serde".to_string()];
+        assert_eq!(
+            disallowed_core_deps(&entries, CORE_DEP_ALLOWLIST),
+            ["serde"]
+        );
+    }
+
+    #[test]
+    fn disallowed_core_deps_is_empty_for_an_allowlisted_only_table() {
+        // The exact intended M1 state — `[dependencies]` holds only `thiserror` —
+        // must pass the gate (empty disallowed set).
+        let entries = ["thiserror".to_string()];
+        assert!(disallowed_core_deps(&entries, CORE_DEP_ALLOWLIST).is_empty());
+    }
+
+    #[test]
+    fn disallowed_core_deps_is_empty_for_an_empty_table() {
+        // A dep-free `[dependencies]` is trivially within the allowlist.
+        assert!(disallowed_core_deps(&[], CORE_DEP_ALLOWLIST).is_empty());
     }
 
     #[test]

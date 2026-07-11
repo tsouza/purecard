@@ -4,9 +4,9 @@ _[Spec index](README.md) · [domain model](../domain-model.md)_
 
 ## 5. L1 — the emitted-Pure grammar (syntactic constraint level)
 
-L1 is the context-free grammar of the *emitted subset* of Legend Pure that the trained model actually produces — **class-anchored relation pipelines**. It makes the output *parse*; L2 (§6) makes the identifiers/types *resolve against a model*; L3 (faithfulness) is out of scope for both.
+L1 is the context-free grammar of the *emitted subset* of Legend Pure that the trained model actually produces. The corpus exercises **two idioms** the grammar must both admit: an **arm-A relational envelope** (`|Db->tableReference(...)->tableToTDS()->…`, the TDS/table-function pipeline, 92.2% of gold) and an **arm-C class-navigation** form (`|Class.all()->…`, class-anchored relation pipelines, 7.8%). Both are single Pure lambdas; they diverge only at the `source` production and in a handful of relational leaf steps. L1 makes the output *parse*; L2 (§6) makes the identifiers/types *resolve against a model*; L3 (faithfulness) is out of scope for both. The both-arms scope is recorded in ADR-0004.
 
-**Core principle (oracle-driven).** Every production below is derived from, and testable against, the thousands of execution-verified gold Pure queries the upstream pipeline already produced (see §8 for corpus locations). The verified corpus **is** the spec: a grammar that masks a token appearing in a gold query is a soundness bug. Do **not** invent productions the corpus does not exercise, and do **not** omit ones it does. The construct inventory in §5.7 is the empirical evidence (counts over ~1,791 verified gold queries at time of drafting).
+**Core principle (oracle-driven).** Every production below is derived from, and testable against, the execution-verified gold Pure queries the upstream pipeline already produced (see §8 for corpus locations). The verified corpus **is** the spec: a grammar that masks a token appearing in a gold query is a soundness bug. Do **not** invent productions the corpus does not exercise, and do **not** omit ones it does. The construct inventory in §5.7 is the empirical evidence — counts over the full **5,034-query** corpus (`corpus/gold_queries.jsonl`: 4,639 arm-A + 395 arm-C), one per query containing the construct.
 
 ### 5.1 Query envelope (two observed top-level forms)
 
@@ -14,8 +14,8 @@ The final-query span PureCard constrains is a Pure lambda. Two envelopes occur i
 
 ```ebnf
 query        = simpleQuery | blockQuery ;
-simpleQuery  = "|" pipeline ;                          (* the common case: ~88% of gold *)
-blockQuery   = "{|" { letBinding ";" } pipeline "}" ;  (* let-scoped block: ~12% of gold *)
+simpleQuery  = "|" pipeline ;                          (* the common case: 98.6% of gold *)
+blockQuery   = "{|" { letBinding ";" } pipeline "}" ;  (* let-scoped block: 69 gold (1.4%) *)
 letBinding   = "let" ident "=" pipeline ;              (* a named sub-pipeline, referenced as $ident *)
 ```
 
@@ -23,12 +23,23 @@ letBinding   = "let" ident "=" pipeline ;              (* a named sub-pipeline, 
 
 ### 5.2 Pipeline and steps
 
+The two idioms branch here — at `source` and in the relational leaf steps — then
+re-converge on the shared lambda/expression productions of §5.3.
+
 ```ebnf
 pipeline   = source , { "->" step } ;
-source     = classpath , ".all()" ;                    (* N3 position: classpath must be a real class *)
-step       = filter | project | groupBy | olapGroupBy | restrict
-           | sort | take | distinct ;
-filter     = "filter" "(" lambda ")" ;
+source     = classNavSource | relationalSource ;
+classNavSource   = classpath , ".all()" ;              (* arm-C: N3 position, classpath must be a real class; 395 gold *)
+relationalSource = classpath "->" "tableReference" "(" strlit "," strlit ")"
+                             "->" "tableToTDS" "(" ")" ;    (* arm-A: Db->table function envelope; 4,639 gold *)
+step       = (* shared + arm-C *)
+             filter | project | groupBy | olapGroupBy | restrict
+           | sort | take | distinct
+             (* arm-A relational steps *)
+           | relGroupBy | relAgg | renameColumns | extend | join | limit ;
+
+(* --- arm-C class-navigation steps (unchanged) --- *)
+filter     = "filter" "(" ( lambda | tdsLambda ) ")" ;  (* bare binder (arm-C) or typed binder (arm-A, §5.3) *)
 project    = "project" "(" "[" colLambda { "," colLambda } "]"
                        "," "[" strlit    { "," strlit    } "]" ")" ;
 groupBy    = "groupBy" "(" "[" { keyLambda { "," keyLambda } } "]"   (* key list MAY be empty: [] *)
@@ -38,15 +49,38 @@ olapGroupBy= "olapGroupBy" "(" "[" strlit { "," strlit } "]"          (* partiti
                        "," sortSpec                                    (* window order, e.g. desc('MaxRevenue') *)
                        "," reduceLambda                                (* e.g. y|$y->rowNumber() *)
                        "," strlit ")" ;                                (* output column name *)
-restrict   = "restrict" "(" "[" strlit { "," strlit } "]" ")" ;
 sort       = "sort" "(" ( strlit "," sortdir | sortSpec { "," sortSpec } ) ")" ;  (* chainable multi-key *)
 sortSpec   = ( "asc" | "desc" ) "(" strlit ")" ;       (* olap/sortBy helper form *)
 sortdir    = "SortDirection.ASC" | "SortDirection.DESC" ;
 take       = "take" "(" int ")" ;
 distinct   = "distinct" "(" ")" ;
+
+(* --- arm-A relational (TDS) steps, corpus-derived --- *)
+restrict   = "restrict" "(" strOrList ")" ;            (* string-or-list; restrict('Rank') AND restrict(['a','b']) *)
+relGroupBy = "groupBy" "(" strOrList "," relAgg { "," relAgg } ")" ;  (* key col(s) then agg(s); key MAY be [] *)
+relAgg     = "agg" "(" strlit "," tdsMapLambda "," tdsReduceLambda ")" ;  (* 3-arg: 'COUNT()', map, reduce *)
+renameColumns = "renameColumns" "(" renameArg ")" ;
+renameArg  = colRename | "[" colRename { "," colRename } "]" ;  (* string-or-list *)
+colRename  = strlit "->" "pair" "(" strlit ")" ;      (* 'FacID'->pair('FacID_T1') *)
+extend     = "extend" "(" extendArg ")" ;
+extendArg  = colDef | "[" colDef { "," colDef } "]" ;          (* string-or-list *)
+colDef     = "col" "(" tdsColLambda "," strlit ")" ; (* col( row: …[1]|$row.getString('c'), '_c0' ) *)
+join       = "join" "(" relationalSubPipeline "," joinType "," braceLambda ")" ;
+relationalSubPipeline = relationalSource , { "->" step } ;    (* a full Db->tableReference…tableToTDS pipeline *)
+joinType   = classpath "." ( "INNER" | "LEFT_OUTER" ) ;  (* meta::relational::metamodel::join::JoinType.INNER *)
+limit      = "limit" "(" int ")" ;
 ```
 
-`groupBy` with an empty key list `[]` is the aggregate-over-all form (verified: the `count(*)` gold). `limit`/`extend` are **not** observed in the current corpus — omit them until a gold query exercises them (per §5, do not add unexercised productions; `take` is the emitted row-limiter).
+`groupBy`/`relGroupBy` with an empty key list `[]` is the aggregate-over-all form
+(verified: the `count(*)` gold). The arm-C `groupBy`/`restrict` take bracketed
+lists; the arm-A `relGroupBy`/`restrict` accept a bare `strlit` *or* a list
+(`strOrList`, §5.4) — the single-column shorthand the relational emitter uses
+(`restrict('Rank')`, `groupBy('FacID_T1', …)`). `limit`/`extend` **are** observed
+in arm-A (665 / 446 gold) — they were absent only from the arm-C slice; `take`
+remains the arm-C row-limiter. `join` embeds a full relational sub-pipeline as its
+first argument (`tableReference` occurs 8,455× across 4,639 queries — more than
+once per query — precisely because joins nest source pipelines), so the PDA must
+recurse `source`/`step` under a sub-pipeline frame.
 
 ### 5.3 Lambdas and expressions (the L2 narrowing surface)
 
@@ -56,7 +90,16 @@ colLambda    = binderVar "|" valueExpr ;               (* project column *)
 keyLambda    = binderVar "|" valueExpr ;               (* groupBy key *)
 mapLambda    = binderVar "|" valueExpr ;               (* agg map *)
 reduceLambda = binderVar "|" reduceExpr ;              (* agg reduce, e.g. y|$y->sum() / ->count() *)
-agg          = "agg" "(" mapLambda "," reduceLambda ")" ;
+agg          = "agg" "(" mapLambda "," reduceLambda ")" ;   (* arm-C 2-arg agg *)
+
+(* --- arm-A typed-multiplicity binders (relational lambdas) --- *)
+typedBinder  = ident ":" classpath "[" mult "]" ;      (* row: meta::pure::tds::TDSRow[1] *)
+mult         = "1" | "*" | int ;                       (* corpus exercises 1 and * only; int reserved (§5.6) *)
+tdsLambda    = typedBinder "|" boolExpr ;              (* filter row predicate *)
+tdsColLambda = typedBinder "|" valueExpr ;             (* extend/col value *)
+tdsMapLambda = typedBinder "|" valueExpr ;             (* relAgg map,    row: …[1]|$row *)
+tdsReduceLambda = typedBinder "|" reduceExpr ;         (* relAgg reduce, y: …[*]|$y->count() *)
+braceLambda  = "{" typedBinder { "," typedBinder } "|" boolExpr "}" ;  (* join key predicate over ≥2 binders *)
 
 boolExpr   = cmp { ("&&" | "||") cmp }
            | "(" boolExpr ")" { ("&&" | "||") cmp } ;
@@ -69,7 +112,8 @@ reduceExpr = refVar "->" reducer "(" ")" ;             (* T3 reducer-type positi
 reducer    = "count" | "sum" | "average" | "min" | "max" | "size" | "rowNumber" ;
 
 boolPred   = ( "exists" | "contains" | "startsWith" | "endsWith"
-             | "isEmpty" | "isNotEmpty" ) "(" [ predArg ] ")" ;
+             | "isEmpty" | "isNotEmpty" ) "(" [ predArg ] ")"
+           | "between" "(" valueExpr "," valueExpr ")" ;  (* arm-A range predicate; 35 gold *)
 predArg    = lambda | valueExpr ;                      (* exists takes a lambda; contains/startsWith take a value *)
 
 (* valueExpr is any scalar-valued expression usable as an operand, a projected column, or a key. *)
@@ -101,6 +145,7 @@ strlit     = "'" { schar | "''" } "'" ;                (* SINGLE quotes only; em
 number     = [ "-" ] digit { digit } [ "." digit { digit } ] ;
 boollit    = "true" | "false" ;
 int        = digit { digit } ;
+strOrList  = strlit | "[" [ strlit { "," strlit } ] "]" ;  (* single string OR bracketed list (MAY be []); arm-A restrict/groupBy keys *)
 ident      = alpha { alnum | "_" } ;                   (* camelCase props, PascalCase classes, snake cols *)
 schar      = <any character except a single quote> ;
 alpha      = "a".."z" | "A".."Z" ;
@@ -122,39 +167,60 @@ The grammar over-approximates validity where a CFG cannot cheaply enforce a cons
 - **Arithmetic/`if` type coherence.** `valueExpr` allows any `arithop` between any two `term`s; L2's type rules (T1–T2) and the compiler reject numeric/string mixing.
 - **Collapse necessity.** L1 allows `navExpr` scalar comparisons without a `->toOne()`; whether a `[0..1]`/`[*]` navigation *must* be collapsed first is L2's T6, not L1's.
 - **Predicate arity.** `boolPred` arguments are loosely typed (`predArg`); the exact arg shape per predicate (lambda vs value) is left to L2/compiler.
+- **Typed-binder multiplicity.** `mult` admits `int` as well as `1`/`*`; the corpus exercises only `1` and `*` (`TDSRow[1]`, `TDSRow[*]`). The `int` alternative is a deliberate, sound widening (it admits more, never less); an integer multiplicity a model emits is caught by the compiler, not L1.
+- **`restrict`/`groupBy` string-or-list.** The arm-A relational steps accept a bare `strlit` *or* a bracketed list (`strOrList`); L1 does not require the list form even where a single column would suffice.
 
 ### 5.7 Observed construct inventory (the empirical spec)
 
-Counts over the ~1,791 verified gold Pure queries at drafting time. Every construct here MUST parse; anything absent here is *not yet* in the grammar (add on first gold occurrence).
+Counts are **queries containing the construct**, over the full **5,034-query**
+corpus (`corpus/gold_queries.jsonl`: 4,639 arm-A + 395 arm-C), recomputed this
+session. Every construct here MUST parse; anything absent here is *not yet* in the
+grammar (add on first gold occurrence, per §5's core principle).
 
-| Construct | Count | Grammar production |
+**Arm-A relational envelope and steps** (the 92.2% majority idiom):
+
+| Construct | Queries | Grammar production |
 |---|---:|---|
-| `filter` | 1894 | `filter` |
-| `project` | 1015 | `project` |
-| `groupBy` | 847 | `groupBy` (empty-key form included) |
-| `restrict` | 590 | `restrict` |
-| `->count()` | 582 | `reducer` |
-| `sort` | 372 | `sort` / `sortdir` / `sortSpec` |
-| `take` | 295 | `take` |
-| `distinct` | 237 | `distinct` |
-| `->max()` / `->min()` | 211 / 64 | `reducer` |
-| `->toOne()` | 206 | `collapse` (T6 collapse operator) |
-| `isNotEmpty` / `isEmpty` | 187 / 147 | `boolPred` |
-| `->average()` / `->sum()` | 142 / 140 | `reducer` |
-| `getInteger`/`getFloat`/`getString` | 310 / 25 / 11 | `colAccess` / `tdsGetter` (N6 relation-column access) |
-| `parseFloat` / `parseInteger` | 59 / 1 | `fn` |
-| `concatenate` | 55 | `fn` |
-| `->exists(...)` | 54 | `boolPred` (to-many collapse; T6) |
-| `->size()` | 51 | `reducer` |
-| `->in(subquery.col)` | 47 | `cmp` subquery-membership form |
-| `->contains(...)` | 42 | `boolPred` (String, T4) |
-| `map` | 31 | (nav/collection map — treat as `fn`) |
-| `->year()` | 20 | `fn` (temporal → numeric) |
-| `toLower` / `toString` / `startsWith` | 11 / 10 / 10 | `fn` / `boolPred` |
-| `if(...)` | present | `ifExpr` |
-| `olapGroupBy` + `rowNumber` | 6 | `olapGroupBy` / `reducer` |
-| `asc()` / `desc()` sort helpers | 12 / 4 | `sortSpec` |
-| `substring` / `at` / `first` / `cast` | 4 / 8 / 6 / 2 | `fn` |
-| `let ... = ...` block form | 214 | `blockQuery` / `letBinding` |
-| `&&` / `\|\|` boolean connectives | 1180 / 52 | `boolExpr` |
+| `tableReference(...)` / `tableToTDS()` | 4639 / 4639 | `relationalSource` (arm-A envelope) |
+| `meta::pure::tds::TDSRow[…]` typed binder | 4057 | `typedBinder` / `mult` |
+| `restrict(...)` | 3540 | `restrict` (string-or-list) |
+| `filter(row: …[1]\|…)` | 3105 | `filter` / `tdsLambda` |
+| `renameColumns(...)` / `->pair(...)` | 2378 / 2378 | `renameColumns` / `colRename` |
+| `join(...)` | 2378 | `join` / `relationalSubPipeline` |
+| `JoinType.INNER` / `JoinType.LEFT_OUTER` | 2196 / 272 | `joinType` |
+| `groupBy(strOrList, agg…)` / `agg('N',…)` | 2335 / 2335 | `relGroupBy` / `relAgg` (3-arg) |
+| `getInteger`/`getString`/`getFloat`/`getBoolean` | 2622 / 2391 / 543 / 4 | `colAccess` / `tdsGetter` |
+| `limit(int)` | 665 | `limit` |
+| `extend(...)` / `col(...)` | 446 / 725 | `extend` / `colDef` |
+| `between(...)` | 35 | `boolPred` (range predicate) |
+
+**Shared expression / lambda constructs** (both arms):
+
+| Construct | Queries | Grammar production |
+|---|---:|---|
+| `->count()` | 1691 | `reducer` |
+| `distinct()` | 1185 | `distinct` |
+| `sort(...)` | 1048 | `sort` / `sortdir` / `sortSpec` |
+| `&&` / `\|\|` boolean connectives | 945 / 560 | `boolExpr` |
+| `desc(...)` / `asc(...)` sort helpers | 665 / 352 | `sortSpec` |
+| `isEmpty()` / `isNotEmpty()` | 441 / 60 | `boolPred` |
+| `->average()` / `->max()` / `->sum()` / `->min()` | 292 / 238 / 180 / 140 | `reducer` |
+| `->contains(...)` | 69 | `boolPred` (String, T4) |
+| `->toOne()` | 41 | `collapse` (T6 collapse operator) |
+| `concatenate` / `between`-arg literals | 35 | `fn` |
+| `if(...)` | 25 | `ifExpr` |
+| `->in(subquery.col)` | 18 | `cmp` subquery-membership form |
+| `parseFloat` / `startsWith` | 15 / 15 | `fn` / `boolPred` |
+| `->size()` / `->exists(...)` | 10 / 14 | `reducer` / `boolPred` |
+| `toLower` / `->map(...)` / `->year()` | 6 / 6 / 5 | `fn` |
 | `==` `!=` `>` `<` `>=` `<=` | (all present) | `cmpop` |
+
+**Arm-C class-navigation constructs** (the 7.8% minority idiom):
+
+| Construct | Queries | Grammar production |
+|---|---:|---|
+| `.all()` | 395 | `classNavSource` (arm-C source) |
+| `project(...)` | 527 | `project` |
+| `take(int)` | 22 | `take` |
+| `olapGroupBy(...)` / `->rowNumber()` | 3 / 3 | `olapGroupBy` / `reducer` |
+| `let … = …` block form | 69 | `blockQuery` / `letBinding` |

@@ -1,37 +1,12 @@
-//! Byte recognizer + replay driver — throwaway M0 wiring.
+//! Throwaway byte recognizer + replay driver for the M0/M1 oracle harness.
 //!
-//! This proves the corpus-load + per-byte-stepping plumbing. It is **not** the
-//! `docs/spec/architecture.md` §9 recognizer surface: the real §8.1 soundness harness is
-//! token-level and mask-based (`accept_token` / `allowed_mask`, computed by
-//! speculative per-token byte-feeding with rollback), which a byte-*committing*
-//! recognizer cannot express. M1 supplies that harness and may replace this
-//! trait and its driver wholesale rather than extend them.
+//! The [`ByteRecognizer`] contract and [`DecodeError`] now ship in the published
+//! `purecard` crate (M1, `src/recognizer.rs` + `src/error.rs`); this module only
+//! supplies a grammar-free [`StubDecoder`] and the [`replay_bytes`] driver that
+//! prove the corpus-load + per-byte-stepping plumbing. The real byte-PDA that
+//! implements `ByteRecognizer` lands in a later task and may retire this stub.
 
-use crate::error::DecodeError;
-
-/// A recognizer that consumes a decode stream one byte at a time.
-pub trait ByteRecognizer {
-    /// Advance the recognizer by one byte.
-    ///
-    /// This is the **single deadness channel**: it returns
-    /// `Err(DecodeError::DeadState { offset, byte })` — `offset` taken from the
-    /// recognizer's own consumed counter — iff the byte has no valid
-    /// continuation, and `Ok(())` otherwise.
-    ///
-    /// # Errors
-    /// Returns [`DecodeError::DeadState`] when `byte` cannot extend the stream.
-    fn accept_byte(&mut self, byte: u8) -> Result<(), DecodeError>;
-
-    /// Whether the recognizer is in an accepting state (EOS is legal here).
-    ///
-    /// A pure query used only by the caller's completeness assertion;
-    /// [`replay_bytes`] never consults it. Deadness is a separate concern and
-    /// reaches the caller solely through [`ByteRecognizer::accept_byte`]'s `Err`.
-    fn is_complete(&self) -> bool;
-
-    /// Return to the initial state for a fresh stream.
-    fn reset(&mut self);
-}
+use purecard::{ByteRecognizer, DecodeError};
 
 /// Grammar-free recognizer: accepts every byte, never dies, always complete.
 ///

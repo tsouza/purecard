@@ -15,19 +15,26 @@
 //!
 //! ## Status
 //!
-//! Milestone **M0** (oracle harness). The shippable core is deliberately tiny
-//! and dependency-free: the [`GuaranteeLevel`] lattice and the [`vocab`] module's
-//! [`Vocab`] table (token id → raw bytes). Everything that drives the M0 feedback
-//! loops — the gold-corpus loader, the throwaway byte recognizer, and the Legend
-//! completeness probe — is test-oracle scaffolding that lives under `tests/`, not
-//! in the published crate, so `purecard` ships with no runtime dependencies (see
-//! `docs/decisions/0003-non-core-in-tests-deplight-core.md`).
+//! Milestone **M1** (L1 byte-PDA grammar), in progress. The shippable core is
+//! the [`GuaranteeLevel`] lattice, the [`vocab`] module's [`Vocab`] table
+//! (token id → raw bytes), and the decoder plumbing the byte-PDA is built on:
+//! the [`DecodeError`] reported when a stream dead-ends and the
+//! [`ByteRecognizer`] contract the automaton implements. The concrete PDA lands
+//! on top of this plumbing in a later task. The gold-corpus loader and the
+//! Legend completeness probe remain test-oracle scaffolding under `tests/`, not
+//! in the published crate (see
+//! `docs/decisions/0003-non-core-in-tests-deplight-core.md`), so the core's only
+//! runtime dependency is `thiserror` for its error types.
 //!
-//! The byte-PDA grammar (M1), the mask cache (M2), the schema overlay (M3), and
-//! the PyO3 boundary (M4) land in later milestones.
+//! The mask cache (M2), the schema overlay (M3), and the PyO3 boundary (M4) land
+//! in later milestones.
 
+pub mod error;
+pub mod recognizer;
 pub mod vocab;
 
+pub use error::DecodeError;
+pub use recognizer::ByteRecognizer;
 pub use vocab::Vocab;
 
 /// The nested guarantee levels a constrained decoder can offer, ordered from

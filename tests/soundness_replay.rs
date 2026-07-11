@@ -9,10 +9,11 @@
 
 use std::path::PathBuf;
 
-// The M0 oracle harness lives under `tests/support/` (ADR-0003), not in the
+// The oracle harness lives under `tests/support/` (ADR-0003), not in the
 // published `purecard` crate. Pull the modules in as crate-local siblings so
-// `recognizer`/`corpus` resolve their `use crate::error::…` against this binary's
-// own root — no code the published crate doesn't need is compiled here.
+// `corpus` resolves its `use crate::error::CorpusError` against this binary's own
+// root — no code the published crate doesn't need is compiled here. The recognizer
+// contract and `DecodeError` now ship in the crate and come in via `use purecard::…`.
 #[path = "support/corpus.rs"]
 mod corpus;
 #[path = "support/error.rs"]
@@ -21,8 +22,8 @@ mod error;
 mod recognizer;
 
 use corpus::load_gold;
-use error::DecodeError;
-use recognizer::{ByteRecognizer, StubDecoder, replay_bytes};
+use purecard::{ByteRecognizer, DecodeError};
+use recognizer::{StubDecoder, replay_bytes};
 
 /// The committed corpus record count. An exact named constant, not a `> 5000`
 /// magic literal (constitution §4): both shrinkage and per-line corruption must
@@ -46,6 +47,8 @@ impl ByteRecognizer for DiesOn {
             return Err(DecodeError::DeadState {
                 offset: self.consumed,
                 byte,
+                state: "DiesOn",
+                stack_top: "none",
             });
         }
         self.consumed += 1;
@@ -119,7 +122,7 @@ fn corpus_path_reports_dead_state() {
     };
     let err = replay_bytes(&mut recognizer, bytes).expect_err("must dead-end on '('");
     assert!(
-        matches!(err, DecodeError::DeadState { offset, byte } if offset == expected_offset && byte == TARGET),
+        matches!(err, DecodeError::DeadState { offset, byte, .. } if offset == expected_offset && byte == TARGET),
         "{err}"
     );
 }
