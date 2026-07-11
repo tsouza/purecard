@@ -10,7 +10,7 @@ M1 gives L1 (parses). M2 makes it fast. Neither knows a specific schema, so L1 a
 
 ## Scope decision
 
-Honest corpus reality: 8 fixtures back **269** in-scope gold, split **256 arm-A / 13 arm-C**. Arm-A (pure relational) exercises only N6 + a table-exists check; the §6 property/type rules fire **only on 13 arm-C queries + 5 hand-authored fixtures**.
+Honest corpus reality: 8 fixtures back **269** in-scope gold, split **256 arm-A / 13 arm-C**. Arm-A (pure relational) exercises only N6 + a table-exists check; the §6 property/type rules fire **only on 13 arm-C queries + 5 hand-authored fixtures**. (These figures are not prose to trust — they are named constants `IN_SCOPE_TOTAL`/`IN_SCOPE_ARM_A`/`IN_SCOPE_ARM_C` asserted in `tests/l2_soundness.rs`, so they fail the gate if the corpus or fixtures drift.)
 
 - **Ships (soundness+precision proven):** N3 (source class exists), N1/N2 (member/nav after dot), N6 (relation columns), T1 (cmpop operand type-class — car_1 `horsepower:String` is the precision lever).
 - **Defers:** N5-as-distinct (the `navigable` map still ships, N1/N2 need it), T2/T3/T4/T6/T7 (thin coverage), N4/T5 (inert — no corpus enum; asserted to mask nothing), full olap re-typing.

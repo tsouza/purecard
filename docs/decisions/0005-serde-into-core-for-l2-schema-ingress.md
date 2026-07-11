@@ -31,9 +31,11 @@ with a machine-checkable justification).
 
 - **Hand-roll a JSON parser in-crate.** Rejected by "library before writing"
   (constitution §4): a bespoke parser would own JSON's escaping, number, and
-  unicode edge cases for no benefit, and `serde`/`serde_json` are the audited,
-  `forbid(unsafe)`-compatible, ubiquitous standard already in the lockfile. A
-  bespoke parser is *more* risk, not less.
+  unicode edge cases for no benefit, whereas `serde`/`serde_json` are the
+  ubiquitous ecosystem standard, already in the lockfile, and clean under
+  `cargo deny` (license + advisory). Our crate keeps `#![forbid(unsafe_code)]`
+  regardless of serde's internal implementation. A bespoke parser is *more*
+  risk, not less.
 - **Keep `from_json` in the test harness only.** Rejected: the host calls it in
   production, so it is not oracle code. Hiding shipped API in `tests/` would be a
   layering lie.
