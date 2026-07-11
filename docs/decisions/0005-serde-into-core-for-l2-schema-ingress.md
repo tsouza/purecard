@@ -55,15 +55,3 @@ with a machine-checkable justification).
 - The allowlist may still only be widened by a human with a recorded
   justification; it never silently disables the check. A future dep needs its own
   ADR.
-
-## Erratum (2026-07-11)
-
-The Context above attributes the `{ thiserror }` runtime-dependency allowlist and
-the `cargo xtask check-core-deplight` gate to ADR-0004. That is a misattribution:
-ADR-0004 records the M1 grammar's two-arm scope, not any dependency decision. The
-`check-core-deplight` gate over the core's `[dependencies]` allowlist was
-established by **ADR-0003** (which fixed that table as *empty*); the `{ thiserror }`
-entry was the byte-PDA's library error type, added at M1. This ADR-0005 widening —
-to `{ thiserror, serde, serde_json }` — and the check it enforces stand as decided
-above. The original body is left intact, since an Accepted ADR is an immutable
-record; this dated note carries the correction.
