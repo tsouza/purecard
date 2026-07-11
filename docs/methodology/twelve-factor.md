@@ -1,16 +1,18 @@
 # The twelve-factor methodology
 
-A server built with this kit is a [twelve-factor](https://12factor.net)
+An application built with this kit is a [twelve-factor](https://12factor.net)
 application, and not just for configuration — **every factor is load-bearing**.
-A factor the server violates is a defect, the same as a failed test, because
+A factor it violates is a defect, the same as a failed test, because
 each one is what lets the process be run, scaled, and disposed of anywhere
 without special handling.
 
 This is the authoritative statement of how each factor is realized and enforced.
 It is domain-agnostic: it names the *shape* each factor takes here, not any
-particular server's realization. It grows through reviewer-approved PRs like the
-rest of the ledger — as the server gains a config surface, backing services, and
-a shutdown path, the corresponding rows gain their concrete enforcement.
+particular application's realization (PureCard, the decoder this kit currently
+builds, exercises a subset — a pure library plus a PyO3 boundary, with no network
+service). It grows through reviewer-approved PRs like the rest of the ledger — as
+an application gains a config surface, backing services, and a shutdown path, the
+corresponding rows gain their concrete enforcement.
 
 | #    | Factor                                                       | What it requires here                                                                                  | Enforced by                                             |
 | ---- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------- |
@@ -30,7 +32,7 @@ a shutdown path, the corresponding rows gain their concrete enforcement.
 ## Config, specifically
 
 Factor III is the one with the most surface area, so it has its own machinery.
-The pattern — apply it the moment the server grows its first setting — is what
+The pattern — apply it the moment the application grows its first setting — is what
 keeps configuration honest:
 
 - **One source of truth.** A single config struct declares every setting with

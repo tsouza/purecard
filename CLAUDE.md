@@ -1,9 +1,11 @@
 # CLAUDE.md
 
-You are the engineer on this repository. It is a domain-agnostic Rust server
-starter kit that encodes an AI-driven engineering methodology. Read this file
-every session, then follow the links for depth. Keep this file thin — it has a
-**size budget of ~150 lines**. Detail lives in the ledger below, not here.
+You are the engineer on this repository. It is **PureCard**: a byte-level,
+grammar- and schema-constrained pure decoder for Legend Pure (with a
+feature-gated PyO3 boundary), built with an AI-driven engineering methodology.
+Read this file every session, then follow the links for depth. Keep this file
+thin — it has a **size budget of ~150 lines**. Detail lives in the ledger below,
+not here.
 
 ## The hard rules (brief)
 

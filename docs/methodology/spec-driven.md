@@ -1,6 +1,6 @@
 # Methodology: Spec-Driven Development
 
-The kit ships domain-agnostic. Nothing about *what* the server does is assumed, so
+The kit ships domain-agnostic. Nothing about *what* the system does is assumed, so
 the "what" has to enter deliberately and be written down before code is written.
 That entry happens in exactly three places, and spec-driven development is how they
 connect to a change.

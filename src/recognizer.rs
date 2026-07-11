@@ -1,9 +1,10 @@
 //! The byte-recognizer surface of the decoder core.
 //!
 //! This ships the [`ByteRecognizer`] contract in `src/` (M1). The concrete
-//! byte-PDA implementation lands in a later task (`specs/m1-l1-grammar.md`, T2+);
-//! until then the oracle harness under `tests/support/` supplies a throwaway
-//! `StubDecoder` that drives this trait.
+//! byte-PDA is the hand-written pushdown automaton in [`Pda`](crate::Pda)
+//! (`src/grammar/pda.rs`); [`DecoderSession`](crate::DecoderSession)
+//! (`src/session.rs`) is the shipped implementation of this trait, folding each
+//! byte through that automaton.
 
 use crate::error::DecodeError;
 

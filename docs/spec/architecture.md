@@ -8,37 +8,40 @@ _[Spec index](README.md) · [domain model](../domain-model.md)_
 
 A pushdown automaton (PDA) handles Pure's context-free shape (the `->` pipeline, bracket matching, lambda structure). A thin type/scope tracker handles the context-sensitive parts — specifically, _which property is legal after `$x.`_ depends on the class `$x` is bound to, which a pure CFG cannot express. This mirrors PICARD's lexical/grammatical/schema-consistency tiers, adapted to Pure: **L1 = the PDA over the emitted grammar; L2 = a typed-scope overlay that intersects L1's terminal set with the schema-legal set at exactly the identifier/type positions L1 defines.**
 
-L2 never _widens_ what L1 allows — it only narrows. `DecoderSession::new(grammar, None)` runs L1-only (pure syntactic guarantee, no schema needed) — useful before a schema is available and as a fast path.
+L2 never _widens_ what L1 allows — it only narrows. `DecoderSession::new(grammar)` runs L1-only (pure syntactic guarantee, no schema needed) — useful before a schema is available and as a fast path; `DecoderSession::with_schema(grammar, schema)` is the additive L2 constructor.
 
 ### 3.2 Crate layout
 
-Single Rust crate, `picard_pure` (published as `purecard`), with an optional PyO3 feature exposing bindings. Internal modules:
+Single Rust crate, `purecard`, with an optional PyO3 feature exposing bindings. Internal modules (the shipped layout):
 
 ```
-picard_pure/
+purecard/
   grammar/        L1: emitted-Pure grammar -> byte-level pushdown automaton (PDA)
-    spec.rs         EBNF-ish grammar definition (the emitted subset, §5)
-    pda.rs          compiled pushdown automaton (states, stack symbols, byte transitions)
-    build.rs        grammar-spec -> PDA compiler
-  vocab.rs        model vocabulary as raw byte strings per token id; token trie
-  mask/
-    cache.rs        context-independent per-state token-mask cache (the perf core, §4)
-    engine.rs       per-step mask = cache[state] ∩ runtime(context-dependent) ∩ schema-narrow(L2)
+    mod.rs          Envelope classifier + DeadState carrier
+    pda.rs          hand-written pushdown automaton (states, stack frames, byte transitions)
+    compiled.rs     CompiledGrammar: vocabulary + lazy per-state mask cache (the perf core, §4)
+  vocab.rs        model vocabulary as raw byte strings per token id
+  mask.rs         BitMask: the dense per-step token bitset (§4)
+  recognizer.rs   ByteRecognizer trait (the byte-at-a-time surface)
   schema/          L2: schema-consistency overlay
-    model.rs        Schema { classes -> {prop -> type} }, passed from Python at session init
+    mod.rs          Schema / SchemaError re-exports
+    model.rs        Schema { classes -> {prop -> type} }, passed from the host at session init
     scope.rs        lambda scope / type environment tracker (what class is the row var bound to)
     narrow.rs       at identifier/type positions, restrict terminals to the schema-legal set
   session.rs      DecoderSession: state + stack + scope; accept_token / allowed_mask / is_complete
+  selfcheck.rs    tokenizer self-check (M5): vocab round-trip before decode
+  error.rs        DecodeError
   ffi.rs          #[cfg(feature="python")] PyO3 bindings (§9)
-  testing/        soundness/differential harness hooks (§8)
 ```
+
+There is no `grammar/spec.rs` or `grammar/build.rs` — real EBNF-spec compilation (§5) is deferred, so `CompiledGrammar::from_spec` is a stub over the single fixed M1 PDA (see `src/grammar/mod.rs`). Masking lives in one `mask.rs` (there is no `mask/` directory), and the soundness/differential harness lives under `tests/`, not an in-crate `testing/` module (ADR-0003).
 
 ### 3.3 Core data flow (per generation)
 
 ```
-Python (inference loop)                 Rust (picard_pure)
+Python (inference loop)                 Rust (purecard)
 ─────────────────────────               ───────────────────
-build Schema from PMCD/MCP  ──init──▶    DecoderSession::new(compiled_grammar, Some(schema))
+build Schema from PMCD/MCP  ──init──▶    DecoderSession::with_schema(compiled_grammar, schema)
 loop each decode step:
   logits = model.forward(...)
   mask   = session.allowed_mask()  ◀──   BitMask over vocab (cached + runtime + schema-narrowed)
@@ -60,7 +63,7 @@ Naive per-token PDA replay at every step over a 150k vocab is far too slow. Pure
 
 ### 4.1 Compile once
 
-1. **Compile** the grammar to a byte-level PDA once (per grammar). Preprocess the model vocabulary into a **byte trie** (each token id → its raw byte string).
+1. **Compile** the grammar to a byte-level PDA once (per grammar). Bind the model vocabulary (`Vocab`: each token id → its raw byte string) to the `CompiledGrammar`, sizing an empty lazy per-state mask cache. Tokens are indexed directly by id — there is no separate trie; per-state acceptance is resolved by probing the PDA on first visit to each state (§4.5).
 
 ### 4.2 Partition the vocabulary per PDA state
 
@@ -110,13 +113,15 @@ The families and the *relative* cost each establishes (no absolute figures are q
 ### 9.1 Rust core
 
 ```rust
-pub struct Vocab { /* token id -> raw bytes; byte trie */ }
+pub struct Vocab { /* token id -> raw bytes */ }
 impl Vocab { pub fn from_byte_tokens(tokens: Vec<Vec<u8>>, eos: u32) -> Self; }
 
-pub struct PureGrammar { /* parsed spec */ }
-impl PureGrammar {
-    pub fn from_spec(spec: &str) -> Result<Self, GrammarError>;   // §5 EBNF
-    pub fn compile(&self, vocab: &Vocab) -> CompiledGrammar;      // build PDA + lazy caches
+pub struct CompiledGrammar { /* &Vocab + lazy per-state mask cache */ }
+impl CompiledGrammar {
+    pub fn compile(vocab: Vocab) -> Self;               // bind vocab, size the lazy caches
+    pub fn from_spec(spec: &str, vocab: Vocab) -> Self; // §5 EBNF compiler is deferred: a stub
+                                                        // over the single fixed M1 PDA today
+    pub fn vocab(&self) -> &Vocab;
 }
 
 pub struct Schema { /* §6.2 */ }
@@ -124,20 +129,26 @@ impl Schema { pub fn from_json(s: &str) -> Result<Self, SchemaError>; }
 
 pub struct DecoderSession<'g> { /* state, stack, scope, &CompiledGrammar */ }
 impl<'g> DecoderSession<'g> {
-    pub fn new(g: &'g CompiledGrammar, schema: Option<Schema>) -> Self;
-    pub fn allowed_mask(&self) -> &BitMask;      // over vocab; EOS bit set iff is_complete()
+    pub fn new(g: &'g CompiledGrammar) -> Self;                       // L1-only
+    pub fn with_schema(g: &'g CompiledGrammar, schema: Schema) -> Self; // additive L2 overlay
+    pub fn allowed_mask(&mut self) -> &BitMask;  // over vocab; EOS bit set iff is_complete().
+                                                 // `&mut` because it refills the session's
+                                                 // reused mask buffer and lazy per-state cache
+                                                 // in place (no per-step alloc; unsafe is forbidden).
     pub fn accept_token(&mut self, id: u32) -> Result<(), DecodeError>;
     pub fn is_complete(&self) -> bool;
     pub fn reset(&mut self);                      // reuse allocation across generations
 }
 ```
 
+`DecodeError` is the single error enum: a byte-level `DeadState` plus the token-level `InadmissibleToken` / `UnknownToken` / `UnexpectedEos` variants (there is no separate `GrammarError`; grammar construction is infallible today).
+
 ### 9.2 PyO3 boundary
 
 `#[cfg(feature="python")]` — the _only_ Python-facing surface; keep it thin:
 
 ```python
-# picard_pure / purecard (compiled extension)
+# purecard (compiled extension)
 g    = compile_grammar(spec_str, vocab_bytes, eos_id)     # once per (model, grammar)
 sess = Session(g, schema_json_or_None)                    # once per generation
 mask = sess.allowed_mask()        # -> np.ndarray[bool] or packed bits, len == vocab

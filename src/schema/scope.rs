@@ -101,7 +101,7 @@ fn unquote(bytes: &[u8]) -> String {
 }
 
 /// The schema-consistency constraint that applies at the current position — the
-/// key the narrower ([`narrow`](crate::schema::narrow::narrow)) builds a legal
+/// key the narrower ([`narrow_into`](crate::schema::narrow::narrow_into)) builds a legal
 /// set from. [`None`](L2Position::None) means "no L2 constraint here" (the L1
 /// mask passes through unchanged).
 #[derive(Debug, Clone, PartialEq, Eq)]

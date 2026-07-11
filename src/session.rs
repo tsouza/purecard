@@ -10,9 +10,12 @@
 //! (`docs/spec/architecture.md` §4, §9): [`allowed_mask`](DecoderSession::allowed_mask)
 //! returns the set of tokens that keep the stream on a path to a valid query, and
 //! [`accept_token`](DecoderSession::accept_token) advances by a whole token,
-//! rolling back untouched if the token is inadmissible. The schema overlay (L2)
-//! is still absent — `schema` is conceptually `None` — and narrows the mask at a
-//! single documented intersection point in a later milestone (§3.1).
+//! rolling back untouched if the token is inadmissible. The schema overlay (L2,
+//! M3) is shipped: [`with_schema`](DecoderSession::with_schema) installs a
+//! [`Schema`], and [`allowed_mask`](DecoderSession::allowed_mask) intersects the
+//! syntactic L1 mask with the schema-legal set at each identifier and operand
+//! position (§3.1) — an additive narrowing that leaves the `schema`-is-`None`
+//! (L1-only) path untouched.
 
 use crate::error::DecodeError;
 use crate::grammar::compiled::CompiledGrammar;

@@ -13,9 +13,10 @@ parser is **shipped, host-facing code** — a consumer of the published `purecar
 crate calls it — so it cannot live in the dev-only oracle harness (`tests/`,
 ADR-0003) the way `serde`/`serde_json` did through M2.
 
-ADR-0004 set the core's runtime-dependency allowlist to `{ thiserror }` and made
-`cargo xtask check-core-deplight` enforce it — a PROTECTED gate (constitution §2,
-§7). Parsing JSON in-crate needs `serde` + `serde_json`, which are not on that
+ADR-0003 established the `cargo xtask check-core-deplight` gate over the core's
+runtime-dependency allowlist — a PROTECTED gate (constitution §2, §7) — an empty
+`[dependencies]` table that M1 widened to `{ thiserror }` (the byte-PDA's error
+type). Parsing JSON in-crate needs `serde` + `serde_json`, which are not on that
 list. So M3 must either widen the allowlist or avoid the dependency.
 
 ## Decision

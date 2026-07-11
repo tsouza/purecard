@@ -39,9 +39,9 @@ the question's intent).
 **Relationships.** Every other entity exists to move a model's output up this
 hierarchy: the grammar/PDA delivers L1; the schema overlay delivers L2.
 
-**Introduced by.** [`spec/overview.md`](spec/overview.md) §1. *(Skeleton — the entities below are specified in
-the spec and land across milestones M0–M4; they are recorded here as the target
-model, not as shipped code.)*
+**Introduced by.** [`spec/overview.md`](spec/overview.md) §1. *(The entities below
+are shipped: all milestones M0–M5 are merged, so each entry describes the decoder
+as built — `src/` is authoritative where a detail is load-bearing.)*
 
 ### Vocab
 
@@ -51,7 +51,7 @@ automaton to a non-dead state — sidestepping subword-boundary alignment entire
 
 **Introduced by.** [`spec/architecture.md`](spec/architecture.md) §4.1, §4.4, §9.1.
 
-### PureGrammar / CompiledGrammar
+### CompiledGrammar
 
 **What it is.** The L1 context-free skeleton of the *emitted subset* of Pure
 (class-anchored relation pipelines), compiled into a pushdown automaton with
@@ -139,8 +139,8 @@ zero core dependencies.
 
 ### Compile a grammar (once per model + grammar)
 
-`PureGrammar::from_spec` → `compile(vocab)` builds the PDA and lazy per-state mask
-caches. [`spec/architecture.md`](spec/architecture.md) §4.5, §9.1.
+`CompiledGrammar::compile(vocab)` (or the stub `from_spec(spec, vocab)`) builds the
+PDA and lazy per-state mask caches. [`spec/architecture.md`](spec/architecture.md) §4.5, §9.1.
 
 ### Constrain one generation (per decode step)
 

@@ -1,10 +1,6 @@
-Here is the synthesized authoritative document. (Output below is the full Markdown, ready to save at `docs/methodology/decoder-testing.md`.)
-
----
-
 # Testing strategy (PureCard decoder)
 
-PureCard is a byte-level grammar/schema-constrained decoder for Legend Pure — a Rust library plus a future thin PyO3 boundary (`docs/spec/architecture.md` §9), not a web server. Its correctness story is not the server pyramid in `docs/methodology/testing.md`; it is the **oracle-driven** strategy of `docs/spec/testing.md` §8, backed by two assets already committed to this workspace: `corpus/gold_queries.jsonl` (5,034 execution-verified gold Pure queries over 161 databases, §13.1) and `corpus/legend-stack/` (the pinned Legend engine 4.113.0 / SDLC 0.195.0, §14). This document is the layered-testing map for that strategy: what each layer proves, how its *valid inputs are mechanically generated*, where it lives, and which CI lane runs it.
+PureCard is a byte-level grammar/schema-constrained decoder for Legend Pure — a Rust library plus a thin, feature-gated PyO3 boundary (`docs/spec/architecture.md` §9), not a web server. Its correctness story is not the server pyramid in `docs/methodology/testing.md`; it is the **oracle-driven** strategy of `docs/spec/testing.md` §8, backed by two assets already committed to this workspace: `corpus/gold_queries.jsonl` (5,034 execution-verified gold Pure queries over 161 databases, §13.1) and `corpus/legend-stack/` (the pinned Legend engine 4.113.0 / SDLC 0.195.0, §14). This document is the layered-testing map for that strategy: what each layer proves, how its *valid inputs are mechanically generated*, where it lives, and which CI lane runs it.
 
 The guarantee under test is asymmetric and silent (§8): a **soundness** bug masks a valid continuation and permanently blinds the model; a **completeness** bug lets it walk into a dead end the compiler rejects. Neither is visible without an oracle. That is why every §8 layer is built, and why the numeric floors are PROTECTED ratchets.
 
@@ -24,7 +20,7 @@ The guarantee under test is asymmetric and silent (§8): a **soundness** bug mas
 
 For a thin server, an e2e request round-trip exercises little more than a unit, so "e2e ≈ unit" is a defensible shortcut. For PureCard that equivalence is a **misread**, and the reason is categorical, not a matter of degree.
 
-- A **unit** test checks one pure Rust function against hand-picked inputs — `pda.rs` byte-transition tables, `mask/engine.rs` set intersection, `scope.rs`/`narrow.rs` N/T rules. It proves a *local* contract in isolation, with no oracle beyond the golden value the author wrote down.
+- A **unit** test checks one pure Rust function against hand-picked inputs — `pda.rs` byte-transition tables, `mask.rs` set intersection, `scope.rs`/`narrow.rs` N/T rules. It proves a *local* contract in isolation, with no oracle beyond the golden value the author wrote down.
 - **e2e** proves an *emergent* property that no unit can stand in for: that masking the logits of a real model, token by token, yields output that a **real external compiler** (Legend engine 4.113.0, §8.2/§14) accepts — through the real API surface (`DecoderSession` → PyO3, §9). The oracle is a ~1.7 GB multi-service Java stack that lives outside the process and outside the language. Nothing in a `#[cfg(test)]` module can substitute for "does Legend's type-checker return `TabularDataSet` or a compile error?"
 
 So the decoder pyramid is stretched at the top: "unit" is a single `accept_token`/`allowed_mask` step; "e2e" is the full differential compile loop against a live oracle. The middle layers (property, fuzz, differential-soundness) are precisely the machinery that lets us *not* need the engine for the common case — they mechanically re-derive the oracle's verdict on the 5,034 cases we already have ground truth for, hermetically.
@@ -51,7 +47,7 @@ So the differential is one-directional and membership-shaped: constrained walk �
 
 The decoder pyramid derives every input **mechanically** — no hand-picked query strings above the unit layer. That is what makes the gates un-gameable (§8.6) and the corpus, not intuition, the spec.
 
-- **Unit — hand golden.** Small, explicit input→expected pairs for one function. Example: `mask/engine.rs::intersect(a, b)` asserted equal to `a ∩ b`; a `pda.rs` transition asserting that after the bytes `->groupBy(` the automaton *requires* `[` and dies on `)`.
+- **Unit — hand golden.** Small, explicit input→expected pairs for one function. Example: `mask.rs::BitMask::intersect(a, b)` asserted equal to `a ∩ b`; a `pda.rs` transition asserting that after the bytes `->groupBy(` the automaton *requires* `[` and dies on `)`.
 
 - **Differential-soundness — the gold corpus (valid by execution).** Source = every `pure_text` in `corpus/gold_queries.jsonl` (5,034 records, 161 db_ids, arm split A=4,639 relational / C=395 class-nav, §13.1). Each string is *already execution-verified*, so it is valid by construction. At M0 (no tokenizer ships, §M0-spec) the harness drives the raw UTF-8 bytes one at a time and asserts the recognizer is never dead and is complete at end; at M1+ with a host vocab it tokenizes and asserts every actual next **token** stays in `allowed_mask()`. Concrete inputs, verbatim from the corpus:
   - arm A: `|spider::activity_1::Db->tableReference('default','Faculty')->tableToTDS()->groupBy([], agg('COUNT()', row: meta::pure::tds::TDSRow[1]|$row, y: meta::pure::tds::TDSRow[*]|$y->count()))`
@@ -67,13 +63,13 @@ The decoder pyramid derives every input **mechanically** — no hand-picked quer
 
 ## Layers in detail
 
-Crate module map (`docs/spec/architecture.md` §3.2): `grammar/{spec,pda,build}.rs`, `vocab.rs`, `mask/{cache,engine}.rs`, `schema/{model,scope,narrow}.rs`, `session.rs`. M0 keeps only the dep-light core in `src/` (`lib.rs` + `vocab.rs`) and ships the oracle harness under `tests/support/{error,recognizer,corpus,legend}.rs`, pulled into the integration-test binaries via `#[path]` (ADR-0003, per `specs/m0-oracle-harness.md`); M1 replaces `StubDecoder`'s body behind the unchanged `ByteRecognizer` trait.
+Crate module map (`docs/spec/architecture.md` §3.2): `grammar/{mod,pda,compiled}.rs`, `vocab.rs`, `mask.rs`, `recognizer.rs`, `schema/{mod,model,scope,narrow}.rs`, `session.rs`, `selfcheck.rs`, `error.rs`, `ffi.rs`. M0 kept only the dep-light core in `src/` (`lib.rs` + `vocab.rs`) and shipped the oracle harness under `tests/support/{error,recognizer,corpus,legend}.rs`, pulled into the integration-test binaries via `#[path]` (ADR-0003, per `specs/m0-oracle-harness.md`); M1 replaced the harness `StubDecoder` with the real byte-PDA behind the unchanged `ByteRecognizer` trait.
 
 1. **Unit** — *what:* each pure fn's local contract. *Example fn:* `pda::transition_requires_open_bracket_after_groupby`; input: state after `->groupBy(`, expect `[` live / `)` dead. Also `vocab::from_byte_tokens` round-trip, `corpus::load_gold` malformed-line → `CorpusError::Json { line, .. }`. *Location:* `#[cfg(test)]` in each `src/**` module. *Gate:* hermetic; counts toward coverage + mutation.
 
 2. **Property** — *what:* §8.5 no-panic / no-premature-dead-end. *Example fn:* `prop_accept_allowed_token_never_dead_ends`. *Location:* `tests/prop_pda.rs`. *Gate:* hermetic; seed from env, printed on shrink.
 
-3. **Mutation** — *what:* the suite kills logic mutants over `grammar/`, `mask/`, `schema/scope.rs`+`narrow.rs`. *Example:* a mutant flipping a `<=` to `<` in `mask/engine.rs` intersection must be caught by soundness or a unit. *Location:* `cargo-mutants` config; the feature-gated `ureq` POST is excluded by a **targeted per-function mutants-skip**, never a threshold drop. *Gate:* hermetic; **≥80% floor**, PROTECTED ratchet.
+3. **Mutation** — *what:* the suite kills logic mutants over `grammar/`, `mask.rs`, `schema/scope.rs`+`narrow.rs`. *Example:* a mutant flipping a `<=` to `<` in `mask.rs`'s intersection must be caught by soundness or a unit. *Location:* `cargo-mutants` config; the feature-gated `ureq` POST is excluded by a **targeted per-function mutants-skip**, never a threshold drop. *Gate:* hermetic; **≥80% floor**, PROTECTED ratchet.
 
 4. **Fuzz** — *what:* §8.4. Accepting-walk half feeds completeness; near-miss half proves precision hermetically. *Example fns:* `fuzz_accepting_walks_stay_live` (hermetic) and `fuzz_near_miss_prefix_rejected` (slide *k* over gold, assert non-gold bytes dead). *Location:* `tests/fuzz_walks.rs`, `tests/mask_precision.rs`; a `fuzz/` target for the OSS-fuzz-style corpus. *Gate:* hermetic (liveness + rejection); compile half on the engine lane. Seeds from CI entropy; a failing seed is **committed as a regression** while the sweep space stays live.
 
@@ -110,9 +106,9 @@ Two lanes, per §14.4, honest and no-skip:
 
 ## Per-milestone rollout
 
-Mapped to `docs/spec/overview.md` §10 milestones and the shipped M0 spec.
+Mapped to `docs/spec/overview.md` §10 milestones. All milestones M0–M5 are shipped; the entries below record what each delivered.
 
-- **M0 — oracle harness (in progress).** Unit tests (`error`/`vocab`/`recognizer`/`corpus`) + **byte-level** differential-soundness replay of all 5,034 gold through `StubDecoder` (`tests/soundness_replay.rs`, exact `EXPECTED_GOLD_RECORDS` count) + engine POST skeleton behind `#[cfg(feature = "legend")]`. Floors armed: **coverage ≥ 70%** on default features. No token-level replay yet (no vocab ships).
+- **M0 — oracle harness (shipped).** Unit tests (`error`/`vocab`/`recognizer`/`corpus`) + **byte-level** differential-soundness replay of all 5,034 gold through the harness `StubDecoder` (`tests/soundness_replay.rs`, exact `EXPECTED_GOLD_RECORDS` count) + engine POST skeleton behind `#[cfg(feature = "legend")]`. Floors armed: **coverage ≥ 70%** on default features. No token-level replay yet (no vocab shipped at M0).
 - **M1 — L1 grammar.** Real byte-PDA replaces `StubDecoder` behind `ByteRecognizer`: byte-level soundness becomes a *real* gate (100% gold admits, zero premature dead-ends). Property tests (§8.5) + byte-level mask-precision + the accepting-walk generator come online. **Mutation floor ≥ 80%** armed over `grammar/`. Completeness lane starts: accepting walks → `grammarToJson`+`lambdaReturnType` nightly (§8.2), target 100% compile.
 - **M2 — performance / mask cache.** Add a **metamorphic** gate: the cached per-state mask (§4.2) must equal the from-scratch recomputation (`mask_cache_equals_recompute`) — a cache bug is a soundness bug. Latency benchmark proves masking is off the critical path (≤ a few hundred µs/token). No new correctness *layer*, one new invariant. This is where token-level replay can begin **if** a host vocab fixture is supplied.
 - **M3 — L2 schema overlay.** Scope/type tracker + narrowed terminals (§6). L2 differential-soundness replay against the 5 pilot `corpus/schemas/armC_ctx_*.md`; schema counterfactuals (phantom + type-mismatch); completeness L2 mode asserts **zero** phantom/type errors on the OOS-partition schemas (§8.3, §8.7). Mutation floor extends over `schema/scope.rs`+`narrow.rs`.
