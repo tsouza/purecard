@@ -84,6 +84,12 @@ jobs:
       # difference.
       - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
+      # `cargo xtask ci`'s `clippy --all-features` now compiles the `python`
+      # feature (the M4 PyO3 boundary), so pyo3's build script needs a Python
+      # interpreter on PATH. abi3-py39 makes the exact version irrelevant.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
@@ -119,8 +125,15 @@ jobs:
   mutation:
     name: mutation
     needs: changes
-    # Mutation runs are expensive; keep them off draft PRs.
-    if: needs.changes.outputs.code == 'true' && github.event.pull_request.draft == false
+    # Mutation runs are expensive (~8 min). Run them at MERGE TIME — the merge
+    # queue (`merge_group`) and pushes to `main` — not on every PR iteration, so
+    # a PR's inner loop isn't gated on the slowest job. Mutation gates the trunk:
+    # with a merge queue it runs before the change lands; without one it runs on
+    # `main` immediately after. Locally, `just test-mutation` still runs it per
+    # change. (Scoped down deliberately by the maintainer; only ratchet tighter.)
+    if: >-
+      needs.changes.outputs.code == 'true' &&
+      (github.event_name == 'merge_group' || github.event_name == 'push')
     runs-on: ubuntu-latest
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -245,6 +258,12 @@ jobs:
           persist-credentials: false
       - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
+      # `just docs` runs `cargo doc --all-features`, which documents the `python`
+      # feature (the M4 PyO3 boundary) and so builds pyo3 — its build script needs
+      # a Python interpreter on PATH.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - uses: taiki-e/install-action@v2
         with:
           tool: just

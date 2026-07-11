@@ -30,7 +30,10 @@
 //! dependencies are `thiserror` (error types) and `serde`/`serde_json` (the L2
 //! JSON ingress, ADR-0005).
 //!
-//! The PyO3 boundary (M4) lands in a later milestone.
+//! Milestone **M4** adds the PyO3 boundary: the feature-gated `ffi` module
+//! (compiled only under `--features python`) marshals the core to a Python
+//! `purecard` extension module — a thin, decode-logic-free surface packaged as a
+//! maturin abi3 wheel. The default build stays pyo3-free and pure.
 
 pub mod error;
 pub mod grammar;
@@ -39,6 +42,13 @@ pub mod recognizer;
 pub mod schema;
 pub mod session;
 pub mod vocab;
+
+// The Python extension surface (M4): a private, feature-gated boundary module.
+// Its items are not part of the Rust public API — they are reachable only from
+// Python via the generated `purecard` module — so `deny(missing_docs)` does not
+// reach them, but they are documented all the same.
+#[cfg(feature = "python")]
+mod ffi;
 
 pub use error::DecodeError;
 pub use grammar::Envelope;

@@ -117,6 +117,30 @@ impl BitMask {
         }
     }
 
+    /// Pack the mask into `buf` as little-endian bytes for the FFI boundary: bit
+    /// `id` lands in `buf[id / 8]` at position `id % 8` (LSB-first), so a Python
+    /// caller recovers it with `np.unpackbits(buf, bitorder="little")[id]` or
+    /// `(int.from_bytes(buf, "little") >> id) & 1`. The packed length is
+    /// `ceil(len / 8)` bytes, spanning every id in `0..len` — the reserved EOS
+    /// bit at `len - 1` included. `buf` is refilled in place (cleared, then
+    /// resized), so a caller reusing one buffer across decode steps allocates
+    /// nothing on the hot path. A `&[u8]` reinterpret of the backing words would
+    /// be zero-copy but needs `unsafe` (forbidden, constitution §1), and the
+    /// per-step copy of ~19 KB is negligible beside a model forward pass.
+    pub fn pack_le_bytes_into(&self, buf: &mut Vec<u8>) {
+        let byte_len = self.len.div_ceil(u8::BITS as usize);
+        buf.clear();
+        buf.resize(byte_len, 0);
+        for (word_idx, &word) in self.words.iter().enumerate() {
+            let base = word_idx * size_of::<u64>();
+            for (offset, &byte) in word.to_le_bytes().iter().enumerate() {
+                if let Some(slot) = buf.get_mut(base + offset) {
+                    *slot = byte;
+                }
+            }
+        }
+    }
+
     /// Iterate the ids of every set bit, ascending.
     ///
     /// Scans each word's bit positions over the fixed `0..WORD_BITS` range rather
@@ -249,6 +273,54 @@ mod tests {
             mask.set(id);
         }
         assert_eq!(mask.iter_ones().collect::<Vec<_>>(), ids.to_vec());
+    }
+
+    #[test]
+    fn pack_le_bytes_round_trips_every_bit_little_endian() {
+        // Set a scattering of bits spanning several bytes and two words, then read
+        // each back out of the packed little-endian form the FFI hands Python.
+        let mut mask = BitMask::with_len(200);
+        let ids = [0u32, 1, 7, 8, 63, 64, 130, 199];
+        for &id in &ids {
+            mask.set(id);
+        }
+        let mut buf = Vec::new();
+        mask.pack_le_bytes_into(&mut buf);
+        // ceil(200 / 8) == 25 bytes cover every id 0..200 (EOS bit at 199).
+        assert_eq!(buf.len(), 25);
+        for id in 0..200u32 {
+            let bit = (buf[(id / 8) as usize] >> (id % 8)) & 1 == 1;
+            assert_eq!(bit, ids.contains(&id), "bit {id}");
+        }
+    }
+
+    #[test]
+    fn pack_le_bytes_reuses_and_shrinks_the_buffer() {
+        // A buffer reused across steps is refilled to the mask's exact byte
+        // length, not appended to: stale bytes from a longer previous mask must
+        // not linger past `ceil(len / 8)`.
+        let mut buf = vec![0xffu8; 64];
+        let mut mask = BitMask::with_len(9); // 2 bytes: ids 0..9, EOS bit at 8
+        mask.set(8);
+        mask.pack_le_bytes_into(&mut buf);
+        assert_eq!(buf.len(), 2);
+        // Only bit 8 set → byte 1, position 0.
+        assert_eq!(buf, vec![0x00, 0x01]);
+    }
+
+    #[test]
+    fn pack_le_bytes_reaches_the_host_scale_eos_byte() {
+        // The reserved EOS bit at the very top of a host-scale mask survives the
+        // pack — the `id / 8` byte-index math must reach the final byte and set
+        // nothing else.
+        let v = HOST_SCALE_VOCAB_LEN;
+        let mut mask = BitMask::with_len(v as usize + 1);
+        mask.set(v);
+        let mut buf = Vec::new();
+        mask.pack_le_bytes_into(&mut buf);
+        assert_eq!(buf.len(), (v as usize + 1).div_ceil(8));
+        assert_eq!((buf[(v / 8) as usize] >> (v % 8)) & 1, 1);
+        assert_eq!(buf.iter().map(|b| b.count_ones()).sum::<u32>(), 1);
     }
 
     #[test]
