@@ -85,6 +85,16 @@ soundness bug.
 (a row of a class) or `RelationScope` (a TDS/relation with named columns). The top
 of the scope stack determines which identifiers L2 admits.
 
+**Shipped (M3).** `Schema::from_json` + `DecoderSession::with_schema` deliver L2 as
+`src/schema/{model, scope, narrow}`. The scope machine (`ScopeTracker`) advances in
+lockstep with `accept_token`, and `allowed_mask` intersects the L1 mask with the
+schema-legal set. The shipped rules are N3 (source-class exists), N1/N2 (member/nav
+after `.`), N6 (relation-column strings), and T1 (comparison operand type-class);
+N5-as-a-distinct-rule, T2/T3/T4/T6/T7, and the inert N4/T5 are deferred (see the
+module docs and `specs/m3-schema-overlay.md`). Soundness holds on all 269
+fixture-backed gold queries; the load-bearing narrowing surface is the 13 arm-C
+queries (arm-A exercises only N6 + a table-exists check).
+
 **Introduced by.** [`spec/schema.md`](spec/schema.md) §6.4.
 
 ### DecoderSession

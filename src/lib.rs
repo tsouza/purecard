@@ -15,24 +15,28 @@
 //!
 //! ## Status
 //!
-//! Milestone **M1** (L1 byte-PDA grammar). The shippable core is the
+//! Milestone **M3** (L2 schema overlay). The shippable core is the
 //! [`GuaranteeLevel`] lattice, the [`vocab`] module's [`Vocab`] table (token id →
-//! raw bytes), and the byte-level recogniser: the [`grammar`] module's hand-written
-//! pushdown automaton ([`Pda`]) over the emitted-Pure grammar (§5), the
+//! raw bytes), the byte-level recogniser (the [`grammar`] module's hand-written
+//! pushdown automaton [`Pda`] over the emitted-Pure grammar (§5), the
 //! [`DecoderSession`] that drives it as a [`ByteRecognizer`], and the
-//! [`DecodeError`] it reports when a stream dead-ends. The gold-corpus loader and
-//! the Legend completeness probe remain test-oracle scaffolding under `tests/`,
-//! not in the published crate (see
-//! `docs/decisions/0003-non-core-in-tests-deplight-core.md`), so the core's only
-//! runtime dependency is `thiserror` for its error types.
+//! [`DecodeError`] it reports on a dead-end), the M2 mask cache
+//! ([`CompiledGrammar`]), and the M3 [`schema`] overlay: [`Schema::from_json`]
+//! ingests the host contract as JSON and [`DecoderSession::with_schema`] narrows
+//! the mask to schema-legal terminals at each identifier/operand position. The
+//! gold-corpus loader and the Legend completeness probe remain test-oracle
+//! scaffolding under `tests/` (see
+//! `docs/decisions/0003-non-core-in-tests-deplight-core.md`); the core's runtime
+//! dependencies are `thiserror` (error types) and `serde`/`serde_json` (the L2
+//! JSON ingress, ADR-0005).
 //!
-//! The mask cache (M2), the schema overlay (M3), and the PyO3 boundary (M4) land
-//! in later milestones.
+//! The PyO3 boundary (M4) lands in a later milestone.
 
 pub mod error;
 pub mod grammar;
 pub mod mask;
 pub mod recognizer;
+pub mod schema;
 pub mod session;
 pub mod vocab;
 
@@ -42,6 +46,7 @@ pub use grammar::compiled::CompiledGrammar;
 pub use grammar::pda::Pda;
 pub use mask::BitMask;
 pub use recognizer::ByteRecognizer;
+pub use schema::{Schema, SchemaError};
 pub use session::DecoderSession;
 pub use vocab::Vocab;
 
