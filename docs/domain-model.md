@@ -45,9 +45,12 @@ as built — `src/` is authoritative where a detail is load-bearing.)*
 
 ### Vocab
 
-**What it is.** The model vocabulary as raw byte strings per token id, plus a byte
-trie. A token is admissible iff feeding its raw bytes advances the byte-level
-automaton to a non-dead state — sidestepping subword-boundary alignment entirely.
+**What it is.** The model vocabulary as raw byte strings per token id, indexed
+directly by token id — there is **no** trie (`src/vocab.rs`: `bytes(id)` is a
+direct table index; per-state acceptance is resolved by probing the byte-level PDA
+on first visit to a state, not by a trie walk). A token is admissible iff feeding
+its raw bytes advances the byte-level automaton to a non-dead state — sidestepping
+subword-boundary alignment entirely.
 
 **Introduced by.** [`spec/architecture.md`](spec/architecture.md) §4.1, §4.4, §9.1.
 
@@ -88,11 +91,15 @@ of the scope stack determines which identifiers L2 admits.
 **Shipped (M3).** `Schema::from_json` + `DecoderSession::with_schema` deliver L2 as
 `src/schema/{model, scope, narrow}`. The scope machine (`ScopeTracker`) advances in
 lockstep with `accept_token`, and `allowed_mask` intersects the L1 mask with the
-schema-legal set. The shipped rules are N3 (source-class exists), N1/N2 (member/nav
-after `.`), N6 (relation-column strings), and T1 (comparison operand type-class —
-only its string/numeric levers; Boolean/Temporal operand narrowing passes through);
-N5-as-a-distinct-rule, T2/T3/T4/T6/T7, and the inert N4/T5 are deferred (see the
-module docs and `specs/m3-schema-overlay.md`). Soundness holds on all 269
+schema-legal set. The shipped rules are N3 (source is a real class **or** the store
+`db_path`, per `Schema::is_source`), N1/N2 (member/nav after `.`), **N5**
+(association-direction narrowing — it ships folded into N1, since
+`Schema::member_names`/`resolve` admit only the navigable, correct-direction
+association ends, so a wrong-direction navigation is already masked by N1's member
+set), N6 (relation-column strings), and T1 (comparison operand type-class — only
+its string/numeric levers; Boolean/Temporal operand narrowing passes through);
+deferred are T2/T3/T4/T6/T7 and the inert N4/T5 (see the module docs and
+`specs/m3-schema-overlay.md`). Soundness holds on all 269
 fixture-backed gold queries; the load-bearing narrowing surface is the 13 arm-C
 queries (arm-A exercises only N6 + a table-exists check).
 

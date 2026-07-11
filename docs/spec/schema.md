@@ -154,7 +154,7 @@ Position-by-position scope + narrowing:
 
 | Position | Scope before | L2 action |
 |---|---|---|
-| `spider::…::Countries` (source) | — | N3: must be a real class path; it is. Set `ClassScope(Countries,(1,1))`. |
+| `spider::…::Countries` (source) | — | N3: must be a real class path **or** the store `db_path` (`Schema::is_source`); here it is a class. Set `ClassScope(Countries,(1,1))`. |
 | `.all()` | ClassScope(Countries) | pipeline element type = `Countries`. |
 | `filter(x\|` | ClassScope(Countries) | S2: bind `x`→`Countries`. |
 | `$x.` → `continent` | ClassScope(Countries, x) | N1: `continent` ∈ Countries.properties `{countryId, countryName, continent}` ✓; type `Integer[0..1]` (numeric). |
@@ -191,7 +191,7 @@ Each rule = "at this position, intersect L1's terminal set with this schema-lega
 
 ### 6.7 Rule count
 
-This section is the **full design surface**: 6 scope-transition rules (S1/source, S2/lambda-bind, S3/nav-advance, plus project/groupBy/agg/sort re-typing consolidated) + **6 narrowing rules (N1–N6)** + **7 type rules (T1–T7)** = **13 narrowing/type constraint rules**, over the scope state machine of §6.4.
+This section is the **full design surface**. The scope state machine of §6.4 is **6 scope-transition rules** (S1/source, S2/lambda-bind, S3/nav-advance, plus project/groupBy/agg/sort re-typing, consolidated); riding on it are the **13 narrowing/type constraint rules** — **6 narrowing (N1–N6)** + **7 type (T1–T7)**, i.e. 6 + 7 = 13. The scope transitions are the state every constraint reads, **not** constraint rules themselves; that is why the constraint count is 13 (the narrowing + type rules), not 6 + 6 + 7 = 19. This §6.7 total is the design surface, distinct from the narrower M3-shipped subset enumerated below.
 
 **Shipped in M3 (a corpus-driven subset):** the overlay builds a constraining mask for **N3** (source-class / store narrowing), **N1/N2** (property + chained-navigation narrowing), **N6** (relation-column narrowing), and **T1** (comparison operand-type compatibility, numeric/string operands; boolean/temporal operand narrowing deferred). **Association-direction narrowing (N5) also ships** — not as a standalone rule but folded into N1: `Schema::member_names`/`resolve` admit only the *navigable* (correct-direction) association ends, so a wrong-direction navigation is already masked by N1's member set. Genuinely deferred — passing through unconstrained today — are **N4/T5** (enum comparison, gated on an L1 `enumLit` operand no gold query yet emits, §6.5 N4) and **T2/T3/T4/T6/T7** (comparator/reducer/string-predicate/multiplicity-collapse/projection-shape), to be activated as the corpus grows (see the M3 spec and `docs/decisions/`). The scope machine of §6.4 is the state every rule reads; `src/schema/narrow.rs` is authoritative for which rules currently constrain.
 
