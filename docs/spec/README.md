@@ -34,5 +34,5 @@ resolves to the file below.
 | §6, §7                            | [schema.md](schema.md)             | L2 — schema-consistency and the L1↔L2 contract                                         |
 | §8, §13, §14                      | [testing.md](testing.md)           | The oracle-driven test strategy, the corpus, the Legend engine + CI                    |
 
-For the testing *methodology* (the layered pyramid that operationalizes §8), see
+For the testing _methodology_ (the layered pyramid that operationalizes §8), see
 [../methodology/decoder-testing.md](../methodology/decoder-testing.md).
