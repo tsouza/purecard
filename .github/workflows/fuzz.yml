@@ -49,6 +49,8 @@ jobs:
             code:
               - 'src/**'
               - 'fuzz/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
               - '.github/workflows/fuzz.yml'
 
   fuzz:
@@ -74,16 +76,20 @@ jobs:
         with:
           workspaces: fuzz
       # First-party installer; it caches the binary on the pinned version key, so
-      # cargo-fuzz is never re-downloaded uncached (constitution §2).
+      # cargo-fuzz is never re-downloaded uncached (constitution §2). Pinned to a
+      # verified-latest version rather than floating.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-fuzz
-      # Restore/persist the per-target seed corpus, keyed on the fuzz sources, so
-      # runs build on prior coverage without an unbounded external fetch.
-      - uses: actions/cache@v4
+          tool: cargo-fuzz@0.13.2
+      # Restore the per-target corpus from the most recent prior run (prefix
+      # match), so runs build on accumulated coverage without an unbounded
+      # external fetch. Saving is a separate post-run step: `actions/cache` only
+      # writes on a key miss, so a combined step keyed on the source hash would
+      # drop the inputs a run newly discovers whenever the sources are unchanged.
+      - uses: actions/cache/restore@v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
-          key: fuzz-corpus-${{ matrix.target }}-${{ hashFiles('fuzz/**/*.rs') }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: |
             fuzz-corpus-${{ matrix.target }}-
       # Pin the target triple to gnu: cargo-fuzz otherwise defaults to the musl
@@ -96,9 +102,18 @@ jobs:
         run: |
           cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- \
             -max_total_time=${{ github.event_name == 'schedule' && env.FUZZ_TIME_BUDGET_NIGHTLY || env.FUZZ_TIME_BUDGET_PR }}
+      # Persist inputs this run discovered under a fresh per-run key (always, so a
+      # crashing run still banks the corpus that reached it); the next run's
+      # prefix-matched restore picks this up.
+      - name: Save fuzz corpus
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
