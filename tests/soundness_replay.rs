@@ -1,125 +1,143 @@
-//! Always-on wiring/liveness gate (default features, no network, no docker).
+//! The M1 soundness killer-test (`docs/spec/testing.md` §8.1, `specs/m1-l1-grammar.md` G2).
 //!
-//! This proves the corpus loads and streams through per-byte stepping without a
-//! harness error. It is **not** a `docs/spec/testing.md` §8.1 soundness guarantee — that
-//! test is token-level and mask-based and arrives with M1. Here the recognizer
-//! is a `StubDecoder` that accepts every byte, so the gate's teeth are: every
-//! line parses, the exact record count matches, and (in the negative test) the
-//! single deadness channel fires on real corpus bytes.
+//! This drives the **real** shipped byte-PDA — [`purecard::DecoderSession`] — over
+//! every gold `pure_text` value one byte at a time, and asserts the killer
+//! property: the recogniser never reaches a dead state on a byte a gold query
+//! actually emits, and is in an accepting state at end-of-stream. Because the
+//! corpus is execution-verified gold, a dead state is not a test failure to work
+//! around — it names a construct the grammar wrongly forbids, to be fixed in the
+//! PDA (§8.6, the oracle-driven tightening loop), never by weakening the
+//! assertion.
+//!
+//! The corpus is partitioned by [`Envelope`], and each partition's record count is
+//! asserted against an exact named constant so shrinkage, corruption, or a
+//! mis-partitioned query all redden the gate.
 
 use std::path::PathBuf;
 
-// The M0 oracle harness lives under `tests/support/` (ADR-0003), not in the
-// published `purecard` crate. Pull the modules in as crate-local siblings so
-// `recognizer`/`corpus` resolve their `use crate::error::…` against this binary's
-// own root — no code the published crate doesn't need is compiled here.
+// The corpus loader lives under `tests/support/` (ADR-0003), not in the published
+// crate. Pull it in as a crate-local sibling so it resolves `use crate::error::…`
+// against this binary's own root. The recogniser, session, envelope classifier,
+// and `DecodeError` all ship in the crate and come in via `use purecard::…`.
 #[path = "support/corpus.rs"]
 mod corpus;
 #[path = "support/error.rs"]
 mod error;
-#[path = "support/recognizer.rs"]
-mod recognizer;
 
 use corpus::load_gold;
-use error::DecodeError;
-use recognizer::{ByteRecognizer, StubDecoder, replay_bytes};
+use purecard::{ByteRecognizer, DecodeError, DecoderSession, Envelope};
 
-/// The committed corpus record count. An exact named constant, not a `> 5000`
-/// magic literal (constitution §4): both shrinkage and per-line corruption must
-/// redden the gate.
-const EXPECTED_GOLD_RECORDS: usize = 5034;
+/// Arm-A (relational envelope) record count. An exact named constant, not a
+/// threshold (constitution §4): a mis-partition must redden the gate.
+const ARM_A: usize = 4639;
+/// Arm-C (class-navigation envelope) record count.
+const ARM_C: usize = 395;
+/// The full committed corpus size — the sum of the two arms.
+const EXPECTED_GOLD_RECORDS: usize = ARM_A + ARM_C;
 
 fn corpus_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("corpus/gold_queries.jsonl")
 }
 
-/// A recognizer that dies the first time it sees `target`, reporting an offset
-/// equal to the count of preceding (non-target) bytes.
-struct DiesOn {
-    target: u8,
-    consumed: usize,
-}
-
-impl ByteRecognizer for DiesOn {
-    fn accept_byte(&mut self, byte: u8) -> Result<(), DecodeError> {
-        if byte == self.target {
-            return Err(DecodeError::DeadState {
-                offset: self.consumed,
-                byte,
-            });
+/// Drive `bytes` through a fresh [`DecoderSession`] one byte at a time.
+///
+/// Returns `Ok(())` if every byte was accepted and the session is complete at
+/// end-of-stream; `Err` with the full oracle-tightening tuple otherwise, so a
+/// soundness failure names the exact byte/state/stack that rejected it.
+fn replay(bytes: &[u8]) -> Result<(), String> {
+    let mut session = DecoderSession::new();
+    for &byte in bytes {
+        if let Err(DecodeError::DeadState {
+            offset,
+            byte,
+            state,
+            stack_top,
+        }) = session.accept_byte(byte)
+        {
+            return Err(format!(
+                "dead state at offset {offset} on byte {byte:#04x} ({:?}) \
+                 in state {state} with stack top {stack_top}",
+                byte as char
+            ));
         }
-        self.consumed += 1;
+    }
+    if session.is_complete() {
         Ok(())
-    }
-    fn is_complete(&self) -> bool {
-        true
-    }
-    fn reset(&mut self) {
-        self.consumed = 0;
+    } else {
+        Err("stream ended in a non-accepting state (unclosed query)".to_owned())
     }
 }
 
 #[test]
-fn gold_corpus_streams_and_replays_without_harness_error() {
+fn every_gold_query_streams_soundly_through_the_real_pda() {
     let records = load_gold(&corpus_path()).expect("open the committed gold corpus");
-    let mut count = 0usize;
+    let mut arm_a = 0usize;
+    let mut arm_c = 0usize;
+
     for item in records {
         // Every line must parse — silent corpus corruption reddens the gate.
         let record = match item {
             Ok(record) => record,
             Err(err) => panic!("gold corpus failed to load: {err}"),
         };
-        let mut recognizer = StubDecoder::new();
-        let consumed = match replay_bytes(&mut recognizer, record.pure_text.as_bytes()) {
-            Ok(consumed) => consumed,
-            Err(err) => panic!("replay dead-ended on {}: {err}", record.source_id),
-        };
-        // The driver's returned count and the recognizer's own counter must both
-        // equal the stream length, and the stub must be complete at end of stream.
-        assert_eq!(consumed, record.pure_text.len(), "on {}", record.source_id);
-        assert_eq!(
-            recognizer.consumed(),
-            record.pure_text.len(),
-            "on {}",
-            record.source_id
-        );
-        assert!(recognizer.is_complete(), "on {}", record.source_id);
-        count += 1;
+
+        match Envelope::classify(&record.pure_text) {
+            Some(Envelope::Relational) => arm_a += 1,
+            Some(Envelope::ClassNav) => arm_c += 1,
+            None => panic!(
+                "gold query {} matches neither envelope marker: {}",
+                record.source_id, record.pure_text
+            ),
+        }
+
+        // The killer property, over the real PDA. On failure the message carries
+        // the (source_id, offset, byte, state, stack_top) tuple so the exact
+        // construct to fix is visible without re-deriving it.
+        if let Err(reason) = replay(record.pure_text.as_bytes()) {
+            panic!(
+                "SOUNDNESS: {} — {reason}\n  query: {}",
+                record.source_id, record.pure_text
+            );
+        }
     }
-    assert_eq!(count, EXPECTED_GOLD_RECORDS);
+
+    // Exact per-arm and total tallies (named constants, not magic literals).
+    assert_eq!(arm_a, ARM_A, "arm-A partition count");
+    assert_eq!(arm_c, ARM_C, "arm-C partition count");
+    assert_eq!(
+        arm_a + arm_c,
+        EXPECTED_GOLD_RECORDS,
+        "total gold record count"
+    );
 }
 
 #[test]
-fn corpus_path_reports_dead_state() {
-    // Drive the SAME load → replay loop through real corpus bytes with a
-    // recognizer that dies on '(' (present in every gold query via `.all()` /
-    // `tableReference(`), so the only failable path is exercised on real data.
-    const TARGET: u8 = b'(';
-    // Propagate load errors rather than `filter_map(Result::ok)`-ing them away:
-    // a malformed/IO-error record must fail the test, not be silently skipped
-    // over on the way to the target — otherwise corpus corruption could pass.
-    let mut target = None;
-    for item in load_gold(&corpus_path()).expect("open corpus") {
-        let record = item.expect("every gold record must parse");
-        if record.pure_text.as_bytes().contains(&TARGET) {
-            target = Some(record);
+fn the_deadness_channel_fires_on_malformed_input_with_a_correct_offset() {
+    // Drive the SAME real session over a byte string that is *not* valid emitted
+    // Pure — an extra ')' with no matching opener — to prove the single deadness
+    // channel fires at the offending offset on the real automaton (not a stub).
+    let malformed = "|X.all())";
+    let mut session = DecoderSession::new();
+    let mut error = None;
+    for &byte in malformed.as_bytes() {
+        if let Err(err) = session.accept_byte(byte) {
+            error = Some(err);
             break;
         }
     }
-    let record = target.expect("a gold record containing '('");
-    let bytes = record.pure_text.as_bytes();
-    let expected_offset = bytes
+    let err = error.expect("the unmatched ')' must dead-end");
+    // The offending closer is the trailing one (the `)` in `all()` is matched).
+    let expected_offset = malformed
+        .as_bytes()
         .iter()
-        .position(|&byte| byte == TARGET)
+        .rposition(|&byte| byte == b')')
         .expect("target present");
-
-    let mut recognizer = DiesOn {
-        target: TARGET,
-        consumed: 0,
-    };
-    let err = replay_bytes(&mut recognizer, bytes).expect_err("must dead-end on '('");
     assert!(
-        matches!(err, DecodeError::DeadState { offset, byte } if offset == expected_offset && byte == TARGET),
+        matches!(
+            err,
+            DecodeError::DeadState { offset, byte, .. }
+                if offset == expected_offset && byte == b')'
+        ),
         "{err}"
     );
 }

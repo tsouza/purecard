@@ -1,0 +1,1241 @@
+//! The byte-level pushdown automaton for the emitted-Pure grammar (§5).
+//!
+//! This is the live automaton: an explicit, hand-written state machine, not a
+//! compiled EBNF table (see `specs/m1-l1-grammar.md`, *Design*). [`step`] is a
+//! **pure** transition function — `(state, stack_top, byte) -> `[`Step`] — with no
+//! I/O, allocation, or hidden state; [`Pda`] is the thin mutable driver that
+//! applies each [`Step`] to a state field and a [`Frame`] stack.
+//!
+//! ## Shape of the recognizer
+//!
+//! The grammar is a *pipeline of terms*: `source ( "->" step )*`, where a term is
+//! an identifier / classpath, a literal, a `$`-var navigation, a lambda, a list,
+//! or a parenthesised sub-expression. Rather than one state per named production,
+//! the automaton lexes byte-by-byte around the value hubs — [`State::ExpectValue`]
+//! / [`State::ExpectValueReq`] (at the start of a term) and [`State::AfterValue`]
+//! (having just completed one) — and defers all delimiter nesting to the [`Frame`]
+//! stack. The machine is a *deliberate, residual* over-approximation of §5: it
+//! still admits strings the compiler rejects — arithmetic/`if` type coherence,
+//! projected-column vs name-count equality, typed-binder multiplicity — but those
+//! are exactly, and only, the escapes §5.6 enumerates. §5.6 does **not** sanction
+//! dropping the `source` production, the `->` connector between steps, keyword
+//! terminals, operator arity, or literal well-formedness, and the machine does not
+//! drop them: a query must open with `|`/`{|` on an *identifier source*; a
+//! completed term is followed by `->`/`.`/`::`/`(`/an operator/a closer (never a
+//! bare abutting identifier outside a `let` binder); every binary operator demands
+//! an operand; numeric and date literals are well-formed; brackets balance against
+//! the matching opener; strings close on an un-doubled quote; and `$`/`.`/`->`/`:`
+//! each demand the token that may follow. Because neither soundness (100% by
+//! construction over all-gold), coverage, nor mutation can *observe*
+//! over-acceptance, this precision is pinned externally: by the negative reject
+//! corpus (`tests/precision_reject.rs`) and the seeded completeness walker
+//! (§8.2/G3/T8). This comment must not be read to excuse a widening beyond §5.6.
+//!
+//! Multi-byte operators (`->`, `::`, `==`, `&&`, `||` vs. the lambda `|`, …) are
+//! recognised by a "saw first byte" state that consults the *next* byte and, when
+//! the second byte does not complete the operator, **delegates** it back into the
+//! hub state it belongs to by re-invoking [`step`]. That delegation is what keeps
+//! the machine a true byte-at-a-time recogniser without any look-ahead buffer.
+
+use crate::grammar::DeadState;
+
+/// A recognizer state: a position in the byte-level parse of an emitted-Pure
+/// query.
+///
+/// The two hubs are [`ExpectValue`](State::ExpectValue) (the machine is about to
+/// read a fresh term) and [`AfterValue`](State::AfterValue) (it has just finished
+/// one and expects an operator, separator, or closer). Every other variant is a
+/// transient lexical position: inside an identifier, number, string, or date
+/// literal, or one byte into a multi-byte operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum State {
+    /// Before the first byte: only `|` (a simple query) or `{` (a block query)
+    /// may open the stream.
+    Start,
+    /// Right after a top-level `|` or a block body's `{|`: the pipeline *source*
+    /// begins here, and a source is always an identifier classpath (`X.all()` /
+    /// `db::Db->…`). A literal, `$`-var, bracket, or operator in source position is
+    /// a dead state — a query is never a bare value like `|42` or `|( )`.
+    ExpectSource,
+    /// Right after a `{` opened a *block query* at the stream start: only `|` (with
+    /// optional leading whitespace) may follow, so a block query is always `{|…}`.
+    AfterBraceOpen,
+    /// At the start of a block-query statement — right after `{|` or a `;`. Only a
+    /// `let` binding, a pipeline source (a classpath ident or a `$`-var), or (after
+    /// a `;`) the trailing `}` may follow; a bare literal statement is a dead state.
+    /// The two variants differ only in whether `}` is legal here.
+    BlockStmt,
+    /// Like [`BlockStmt`](State::BlockStmt) but a trailing `}` may close the block
+    /// — the position right after a `;`, so `;}` completes a block query.
+    BlockStmtClose,
+    /// Inside a pipeline *source* classpath identifier segment. Unlike the generic
+    /// [`InIdent`](State::InIdent), a source is not a completed value: only `.`
+    /// (`.all()`), `->` (arm-A `tableReference`), or a `::` classpath separator may
+    /// follow — never whitespace-to-accepting or a closer, so a bare `|X ` dies.
+    InSourceIdent,
+    /// Just consumed the first `:` of a source-classpath `::` separator; a second
+    /// `:` must follow immediately (`db::Db`), so a lone `:` or interior whitespace
+    /// in source position is a dead state.
+    SourceColon,
+    /// Just consumed the second `:` of a source-classpath `::`; a classpath
+    /// identifier must follow, keeping the source in its own state across the `::`.
+    SourceColon2,
+    /// Just consumed a `-` in source position; only `>` (completing `->`) may
+    /// follow — a source is never the left operand of arithmetic minus.
+    SourceDash,
+    /// Consumed `l` at a block-statement start: a candidate `let` keyword. Falls
+    /// back to a source identifier for any classpath that merely begins with `l`.
+    LetL,
+    /// Consumed `le`: still a candidate `let`.
+    LetLe,
+    /// Consumed `let`: the `let` keyword only if whitespace follows; otherwise the
+    /// bytes were the prefix of a longer source identifier (`letters`, `let.foo`).
+    LetLet,
+    /// After the `let` keyword and its whitespace: the binder name identifier must
+    /// follow (`let m = …`).
+    ExpectBinder,
+    /// Inside a `let` binder name identifier.
+    InBinder,
+    /// After a completed binder name: whitespace then the single `=` that opens the
+    /// binding's right-hand-side pipeline (`let m = …`). A second name is dead.
+    AfterBinder,
+    /// Right after a `[` that holds a `*` multiplicity token: only the closing `]`
+    /// may follow, so `[*]` is the only shape `*` reaches (never `take(*)`).
+    InMultiplicity,
+    /// Right after the `{` of a `join` brace lambda: a typed binder identifier must
+    /// follow (`{r1: …[1], … | body}`), so a literal body like `{1}` is dead.
+    ExpectBraceBinder,
+    /// After a single `:` *and* the whitespace that followed it — a typed-binder
+    /// colon with trailing space (`row: Type`). A `::` must be contiguous, so a
+    /// second `:` here (`meta: :pure`) is a dead state; only an identifier may follow.
+    AfterColonWs,
+    /// At the start of a term where the term is *optional*: entered right after a
+    /// `(` or `[` (or a block-body `;`), so a matching closer may legally follow —
+    /// the empty argument list `all()`, the empty list `[]`, the empty key
+    /// `groupBy([]…)`, or the trailing `;}` of a block query.
+    ExpectValue,
+    /// At the start of a term where the term is *required*: entered after a binary
+    /// operator, a `,`, a lambda/`||` pipe, or a unary `!`/`-`. Identical to
+    /// [`ExpectValue`](State::ExpectValue) except a closer is a dead state, so an
+    /// operator may not dangle against a `)`/`]`/`}` (`take(1 +)`, `$x.a && )`).
+    ExpectValueReq,
+    /// Having just completed a term; an operator, separator, call, or closer may
+    /// follow.
+    AfterValue,
+    /// Inside an identifier or classpath segment (`[A-Za-z_][A-Za-z0-9_]*`).
+    InIdent,
+    /// Just consumed the `-` sign of a numeric literal in value position; a digit
+    /// must follow, so a bare `-`, `--5`, or `-.5` is a dead state.
+    SawNumSign,
+    /// Inside the integer part of a number literal.
+    InNumberInt,
+    /// Just consumed the `.` of a number literal; at least one fractional digit
+    /// must follow, so a trailing `1.` is a dead state.
+    NeedFracDigit,
+    /// Inside the fractional part of a number literal, after the `.`.
+    InNumberFrac,
+    /// Inside a single-quoted string literal.
+    ///
+    /// `escaped` is `true` when the previous byte was a `'` whose role — closing
+    /// quote or the first half of a doubled `''` — is decided by the current
+    /// byte (§5.5 quote doubling).
+    InStrLit {
+        /// Whether a pending `'` is awaiting its disambiguating byte.
+        escaped: bool,
+    },
+    /// Just consumed `%`; at least one date character must follow, so a bare `%`
+    /// (`take(%)`) is a dead state.
+    SawPercent,
+    /// Inside a `%`-prefixed date/time literal (`%2018-03-17T07:13:53`).
+    InDateLit,
+    /// Just consumed `$`; a `refVar` identifier must follow.
+    AfterDollar,
+    /// Just consumed `.`; a property / getter / `all` identifier must follow.
+    AfterDot,
+    /// Just consumed `->`; a step / method / reducer identifier must follow.
+    AfterArrow,
+    /// Just consumed a single `:` (a typed-binder colon `row: …[1]`) or the first
+    /// `:` of a `::` classpath separator; a classpath identifier or a second `:`
+    /// must follow.
+    AfterColon,
+    /// Just consumed the second `:` of a `::` classpath separator; a classpath
+    /// identifier must follow. A third `:` is a dead state — `:::` is never valid.
+    AfterColon2,
+    /// Just consumed `-`; a `>` completes `->`, anything else is arithmetic minus.
+    SawDash,
+    /// Just consumed `|`; a second `|` is boolean `||`, anything else is the
+    /// lambda-binder pipe and starts the body.
+    SawPipe,
+    /// Just consumed `=`; an optional second `=` completes `==` (vs. `let x =`).
+    SawEq,
+    /// Just consumed `!`; a `=` must follow to complete `!=`.
+    SawBang,
+    /// Just consumed `>`; an optional `=` completes `>=`.
+    SawGt,
+    /// Just consumed `<`; an optional `=` completes `<=`.
+    SawLt,
+    /// Just consumed `&`; a second `&` must follow to complete `&&`.
+    SawAmp,
+}
+
+impl State {
+    /// A stable name for this state, used in [`DecodeError::DeadState`] so a
+    /// soundness failure names the exact production position that rejected a byte
+    /// (`specs/m1-l1-grammar.md`, G4).
+    ///
+    /// [`DecodeError::DeadState`]: crate::DecodeError::DeadState
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            State::Start => "Start",
+            State::ExpectSource => "ExpectSource",
+            State::AfterBraceOpen => "AfterBraceOpen",
+            State::BlockStmt => "BlockStmt",
+            State::BlockStmtClose => "BlockStmtClose",
+            State::InSourceIdent => "InSourceIdent",
+            State::SourceColon => "SourceColon",
+            State::SourceColon2 => "SourceColon2",
+            State::SourceDash => "SourceDash",
+            State::LetL => "LetL",
+            State::LetLe => "LetLe",
+            State::LetLet => "LetLet",
+            State::ExpectBinder => "ExpectBinder",
+            State::InBinder => "InBinder",
+            State::AfterBinder => "AfterBinder",
+            State::InMultiplicity => "InMultiplicity",
+            State::ExpectBraceBinder => "ExpectBraceBinder",
+            State::AfterColonWs => "AfterColonWs",
+            State::ExpectValue => "ExpectValue",
+            State::ExpectValueReq => "ExpectValueReq",
+            State::AfterValue => "AfterValue",
+            State::InIdent => "InIdent",
+            State::SawNumSign => "SawNumSign",
+            State::InNumberInt => "InNumberInt",
+            State::NeedFracDigit => "NeedFracDigit",
+            State::InNumberFrac => "InNumberFrac",
+            State::InStrLit { escaped: false } => "InStrLit",
+            State::InStrLit { escaped: true } => "InStrLit(pendingQuote)",
+            State::SawPercent => "SawPercent",
+            State::InDateLit => "InDateLit",
+            State::AfterDollar => "AfterDollar",
+            State::AfterDot => "AfterDot",
+            State::AfterArrow => "AfterArrow",
+            State::AfterColon => "AfterColon",
+            State::AfterColon2 => "AfterColon2",
+            State::SawDash => "SawDash",
+            State::SawPipe => "SawPipe",
+            State::SawEq => "SawEq",
+            State::SawBang => "SawBang",
+            State::SawGt => "SawGt",
+            State::SawLt => "SawLt",
+            State::SawAmp => "SawAmp",
+        }
+    }
+}
+
+/// A stack frame: an open delimiter awaiting its match.
+///
+/// The frame kind makes bracket matching **context-dependent** (§4.2): a `)`
+/// closes only a [`Paren`](Frame::Paren), a `]` only a [`Bracket`](Frame::Bracket),
+/// and a `}` only a [`Brace`](Frame::Brace); any other pairing is a dead state.
+/// The three delimiter kinds are the whole stack alphabet — pipeline `->` chains
+/// and lambda bodies need no resume marker because the [`State::ExpectValue`] /
+/// [`State::AfterValue`] hubs already encode "what may come next" without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Frame {
+    /// An open `(` — a call's argument list or a parenthesised expression.
+    Paren,
+    /// An open `[` — a list literal or a `[mult]` multiplicity bracket.
+    Bracket,
+    /// An open `{` of a block query (`{|…}`). The `let`/`;`/`=` block rules key on
+    /// this frame, so they never leak into a `join` brace lambda.
+    Brace,
+    /// An open `{` of a `join` brace lambda (`{r1: …[1], … | body}`) — a distinct
+    /// frame from [`Brace`](Frame::Brace) so a lone `=` inside the lambda body is
+    /// not mistaken for a block-query `let` binder.
+    BraceLambda,
+}
+
+impl Frame {
+    /// A stable name for this frame, used in [`DecodeError::DeadState`]'s
+    /// `stack_top` field.
+    ///
+    /// [`DecodeError::DeadState`]: crate::DecodeError::DeadState
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Frame::Paren => "Paren",
+            Frame::Bracket => "Bracket",
+            Frame::Brace => "Brace",
+            Frame::BraceLambda => "BraceLambda",
+        }
+    }
+}
+
+/// The outcome of feeding one byte to [`step`].
+///
+/// [`Pop`](Step::Pop) is only ever returned when the byte's closer matches the
+/// current `stack_top`, so [`Pda`] can pop unconditionally; a mismatched or
+/// missing opener yields [`Dead`](Step::Dead) instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// Stay within the current frame; move to the given state.
+    Next(State),
+    /// Open a new delimiter: push the frame, move to the given state.
+    Push(Frame, State),
+    /// Close the current (matched) delimiter: pop the stack, move to the state.
+    Pop(State),
+    /// No valid continuation: the byte is rejected.
+    Dead,
+}
+
+/// A single space, tab, newline, or carriage return: the inter-token whitespace
+/// skipped between — never inside — tokens.
+const WS: &[u8; 4] = b" \t\n\r";
+
+fn is_ws(byte: u8) -> bool {
+    WS.contains(&byte)
+}
+
+const fn is_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+const fn is_ident_tail(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The bytes that may appear inside a `%`-prefixed date/time literal: digits and
+/// the `-`, `T`, `:` separators (`%2018-03-17T07:13:53`).
+const fn is_date_char(byte: u8) -> bool {
+    byte.is_ascii_digit() || matches!(byte, b'-' | b'T' | b':')
+}
+
+/// Close `top` if `byte` is its matching closer, else [`Step::Dead`].
+///
+/// The one place delimiter matching is decided; both hubs route their `)`/`]`/`}`
+/// here so the context-dependent pop lives in a single spot.
+const fn close(top: Option<Frame>, byte: u8) -> Step {
+    match (top, byte) {
+        (Some(Frame::Paren), b')')
+        | (Some(Frame::Bracket), b']')
+        | (Some(Frame::Brace), b'}')
+        | (Some(Frame::BraceLambda), b'}') => Step::Pop(State::AfterValue),
+        _ => Step::Dead,
+    }
+}
+
+/// The shared body of the two value-position hubs. `allow_close` distinguishes
+/// [`State::ExpectValue`] (a term is optional, so a matching closer is legal) from
+/// [`State::ExpectValueReq`] (a term is required, so a closer is a dead state); the
+/// two states are otherwise byte-for-byte identical, so keeping one body honours
+/// DRY (constitution §4) and guarantees they never drift apart.
+fn value_position(stack_top: Option<Frame>, byte: u8, allow_close: bool) -> Step {
+    let ws_state = if allow_close {
+        State::ExpectValue
+    } else {
+        State::ExpectValueReq
+    };
+    match byte {
+        b if is_ws(b) => Step::Next(ws_state),
+        b if is_ident_start(b) => Step::Next(State::InIdent),
+        b if b.is_ascii_digit() => Step::Next(State::InNumberInt),
+        b'-' => Step::Next(State::SawNumSign),
+        b'\'' => Step::Next(State::InStrLit { escaped: false }),
+        b'%' => Step::Next(State::SawPercent),
+        b'$' => Step::Next(State::AfterDollar),
+        b'(' => Step::Push(Frame::Paren, State::ExpectValue),
+        b'[' => Step::Push(Frame::Bracket, State::ExpectValue),
+        // A `{` in value position opens a `join` brace lambda; it must begin with a
+        // typed binder identifier (`{r1: …[1], … | body}`), so a literal body like
+        // `{1}` is a dead state. Its own `Frame::BraceLambda` keeps the block-query
+        // `let`/`;`/`=` rules from leaking into the lambda body.
+        b'{' => Step::Push(Frame::BraceLambda, State::ExpectBraceBinder),
+        // A bare `|` opens a zero-arg lambda body (`if(c, |x, |y)`); the body value
+        // is required.
+        b'|' => Step::Next(State::ExpectValueReq),
+        // A `!` in value position is the unary boolean-NOT prefix
+        // (`&& !$s.name->in(…)`); its operand is required.
+        b'!' => Step::Next(State::ExpectValueReq),
+        // A `*` is only ever a multiplicity token, valid solely as the sole content
+        // of a `[…]` bracket (`TDSRow[*]`). It is legal only in a fresh bracket value
+        // position (`allow_close`, i.e. right after `[`), never as an arithmetic or
+        // argument value — so `take(*)` and `take(1 + *)` are dead states.
+        b'*' if allow_close && stack_top == Some(Frame::Bracket) => {
+            Step::Next(State::InMultiplicity)
+        }
+        b')' | b']' | b'}' if allow_close => close(stack_top, byte),
+        _ => Step::Dead,
+    }
+}
+
+/// The shared body of the two block-statement states. A block query is
+/// `{| (let name = pipeline ;)* pipeline ;? }`, so a statement start admits a `let`
+/// binding, a pipeline source (a classpath identifier or a `$`-var), or nothing
+/// but whitespace before them. `allow_close` (the post-`;` position) additionally
+/// admits the trailing `}`; the post-`{|` position does not, so an empty `{|}` is a
+/// dead state. A bare literal statement (`{|42;}`) is rejected — a query result is a
+/// pipeline, never a scalar.
+fn block_stmt(stack_top: Option<Frame>, byte: u8, allow_close: bool) -> Step {
+    let ws_state = if allow_close {
+        State::BlockStmtClose
+    } else {
+        State::BlockStmt
+    };
+    match byte {
+        b if is_ws(b) => Step::Next(ws_state),
+        // `l` may begin the `let` keyword; it falls back to a source classpath that
+        // merely starts with `l`.
+        b'l' => Step::Next(State::LetL),
+        b if is_ident_start(b) => Step::Next(State::InSourceIdent),
+        b'$' => Step::Next(State::AfterDollar),
+        b'}' if allow_close => close(stack_top, byte),
+        _ => Step::Dead,
+    }
+}
+
+/// The pure transition function: given the current `state`, the `stack_top`
+/// frame (if any), and the next `byte`, return the [`Step`] to take.
+///
+/// Pure and total — the same inputs always yield the same [`Step`], with no side
+/// effects. Multi-byte operators are handled by delegating an already-consumed
+/// first byte's continuation back into the hub state it belongs to (a tail call
+/// to `step` itself), which is why this reads a stream one byte at a time with no
+/// look-ahead.
+#[must_use]
+pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
+    match state {
+        State::Start => match byte {
+            b if is_ws(b) => Step::Next(State::Start),
+            // A simple query opens with `|` on its pipeline source.
+            b'|' => Step::Next(State::ExpectSource),
+            // A block query opens with `{`, and the `|` of `{|` must follow.
+            b'{' => Step::Push(Frame::Brace, State::AfterBraceOpen),
+            _ => Step::Dead,
+        },
+
+        // After a top-level `|` (a simple query's source) or a `let name =` binding's
+        // `=` (its right-hand-side pipeline source): the source is always an
+        // identifier classpath. Whitespace is skipped; anything but an identifier
+        // start is a dead state (`|42`, `|*`, `|( )`, `|$x` all die here). The
+        // identifier lands in [`InSourceIdent`], not the generic [`InIdent`], so a
+        // bare classpath without a `.all()`/`->` production (`|X `) cannot accept.
+        State::ExpectSource => match byte {
+            b if is_ws(b) => Step::Next(State::ExpectSource),
+            b if is_ident_start(b) => Step::Next(State::InSourceIdent),
+            _ => Step::Dead,
+        },
+
+        // After `{` opened a block query: only the `|` of `{|` (past optional
+        // whitespace) may follow, so `{X.all()…}` without the pipe is a dead state.
+        State::AfterBraceOpen => match byte {
+            b if is_ws(b) => Step::Next(State::AfterBraceOpen),
+            b'|' => Step::Next(State::BlockStmt),
+            _ => Step::Dead,
+        },
+
+        // A block-query statement start (`{|` or after a `;`): a `let` binding, a
+        // pipeline source, or a `$`-var; `BlockStmtClose` additionally admits `}`.
+        State::BlockStmt => block_stmt(stack_top, byte, false),
+        State::BlockStmtClose => block_stmt(stack_top, byte, true),
+
+        State::ExpectValue => value_position(stack_top, byte, true),
+        State::ExpectValueReq => value_position(stack_top, byte, false),
+
+        State::AfterValue => match byte {
+            b if is_ws(b) => Step::Next(State::AfterValue),
+            b'-' => Step::Next(State::SawDash),
+            b'>' => Step::Next(State::SawGt),
+            b'<' => Step::Next(State::SawLt),
+            b'=' => Step::Next(State::SawEq),
+            b'!' => Step::Next(State::SawBang),
+            b'&' => Step::Next(State::SawAmp),
+            b'|' => Step::Next(State::SawPipe),
+            // Binary arithmetic: an operand is required, so a closer cannot follow.
+            b'+' | b'*' | b'/' => Step::Next(State::ExpectValueReq),
+            b'.' => Step::Next(State::AfterDot),
+            b':' => Step::Next(State::AfterColon),
+            b'(' => Step::Push(Frame::Paren, State::ExpectValue),
+            b'[' => Step::Push(Frame::Bracket, State::ExpectValue),
+            // A `,` separates list/argument elements: the next element is required
+            // (no trailing `(a,)`).
+            b',' if stack_top.is_some() => Step::Next(State::ExpectValueReq),
+            // A `;` ends a block-query statement; the next `let` binding or the final
+            // pipeline follows, but the block may also close immediately (`;}`), so
+            // [`BlockStmtClose`] admits both a fresh statement and the trailing `}`.
+            b';' if stack_top == Some(Frame::Brace) => Step::Next(State::BlockStmtClose),
+            b')' | b']' | b'}' => close(stack_top, byte),
+            _ => Step::Dead,
+        },
+
+        State::InIdent => {
+            if is_ident_tail(byte) {
+                Step::Next(State::InIdent)
+            } else {
+                step(State::AfterValue, stack_top, byte)
+            }
+        }
+
+        // A pipeline source classpath. Unlike [`InIdent`], a source is not yet a
+        // completed value: it must be produced by `.all()` (`.`), an arm-A
+        // `->tableReference(…)` envelope (`->`), or continue across a `::` classpath
+        // separator. Anything else — whitespace, a closer, an operator — is a dead
+        // state, so a bare `|X ` never reaches an accepting configuration.
+        State::InSourceIdent => match byte {
+            b if is_ident_tail(b) => Step::Next(State::InSourceIdent),
+            b'.' => Step::Next(State::AfterDot),
+            b'-' => Step::Next(State::SourceDash),
+            b':' => Step::Next(State::SourceColon),
+            _ => Step::Dead,
+        },
+
+        // A source-classpath `::` separator: the second `:` must follow immediately,
+        // and then an identifier, keeping the source in its own state across the
+        // whole classpath (`spider::geo::Db`).
+        State::SourceColon => {
+            if byte == b':' {
+                Step::Next(State::SourceColon2)
+            } else {
+                Step::Dead
+            }
+        }
+        State::SourceColon2 => {
+            if is_ident_start(byte) {
+                Step::Next(State::InSourceIdent)
+            } else {
+                Step::Dead
+            }
+        }
+
+        // A `-` in source position is only ever the start of `->`; a source is never
+        // the left operand of arithmetic minus, so anything but `>` is a dead state.
+        State::SourceDash => {
+            if byte == b'>' {
+                Step::Next(State::AfterArrow)
+            } else {
+                Step::Dead
+            }
+        }
+
+        // `let`-keyword recognition at a block-statement start. Each byte either
+        // advances the keyword or, on any divergence, falls back to a source
+        // classpath that merely shares the prefix (`letters`, `let.foo`). The
+        // keyword is confirmed only by the whitespace that must separate it from the
+        // binder name (`let m = …`).
+        State::LetL => {
+            if byte == b'e' {
+                Step::Next(State::LetLe)
+            } else {
+                step(State::InSourceIdent, stack_top, byte)
+            }
+        }
+        State::LetLe => {
+            if byte == b't' {
+                Step::Next(State::LetLet)
+            } else {
+                step(State::InSourceIdent, stack_top, byte)
+            }
+        }
+        State::LetLet => {
+            if is_ws(byte) {
+                Step::Next(State::ExpectBinder)
+            } else {
+                step(State::InSourceIdent, stack_top, byte)
+            }
+        }
+
+        // `let` seen: the binder name identifier, then the single `=` that opens the
+        // right-hand-side pipeline. A second bare name (`let m n =`) is a dead state.
+        State::ExpectBinder => match byte {
+            b if is_ws(b) => Step::Next(State::ExpectBinder),
+            b if is_ident_start(b) => Step::Next(State::InBinder),
+            _ => Step::Dead,
+        },
+        State::InBinder => match byte {
+            b if is_ident_tail(b) => Step::Next(State::InBinder),
+            b if is_ws(b) => Step::Next(State::AfterBinder),
+            b'=' => Step::Next(State::ExpectSource),
+            _ => Step::Dead,
+        },
+        State::AfterBinder => match byte {
+            b if is_ws(b) => Step::Next(State::AfterBinder),
+            b'=' => Step::Next(State::ExpectSource),
+            _ => Step::Dead,
+        },
+
+        // `[*]` multiplicity: only the closing `]` may follow the `*`.
+        State::InMultiplicity => {
+            if byte == b']' {
+                close(stack_top, byte)
+            } else {
+                Step::Dead
+            }
+        }
+
+        // A `join` brace lambda must begin with a typed binder identifier
+        // (`{r1: …[1], … | body}`); a literal, digit, or opener body (`{1}`) is a
+        // dead state.
+        //
+        // ponytail (L1 residual, §5.6): the binder is only required to *start* with
+        // an identifier — a lambda missing its `|` body (`{r1: T[1]}`) or with an
+        // untyped binder still streams. Fully requiring the `binder(s) | body` shape
+        // needs per-frame phase tracking the byte machine deliberately omits; the
+        // compiler re-catches a bodyless join lambda, so it stays an L1 escape.
+        State::ExpectBraceBinder => match byte {
+            b if is_ws(b) => Step::Next(State::ExpectBraceBinder),
+            b if is_ident_start(b) => Step::Next(State::InIdent),
+            _ => Step::Dead,
+        },
+
+        // `-` in value position begins a negative number literal; a digit must
+        // follow, so `-`, `--5`, and `-.5` all die here.
+        State::SawNumSign => {
+            if byte.is_ascii_digit() {
+                Step::Next(State::InNumberInt)
+            } else {
+                Step::Dead
+            }
+        }
+
+        State::InNumberInt => match byte {
+            b if b.is_ascii_digit() => Step::Next(State::InNumberInt),
+            b'.' => Step::Next(State::NeedFracDigit),
+            _ => step(State::AfterValue, stack_top, byte),
+        },
+
+        // The `.` of a number was just consumed; at least one fractional digit is
+        // required, so a trailing `1.` dies.
+        State::NeedFracDigit => {
+            if byte.is_ascii_digit() {
+                Step::Next(State::InNumberFrac)
+            } else {
+                Step::Dead
+            }
+        }
+
+        State::InNumberFrac => {
+            if byte.is_ascii_digit() {
+                Step::Next(State::InNumberFrac)
+            } else {
+                step(State::AfterValue, stack_top, byte)
+            }
+        }
+
+        State::InStrLit { escaped } => {
+            if escaped {
+                // The previous byte was a `'`. A second `'` is a doubled quote
+                // (stay in the body); anything else means the string already
+                // closed, so re-dispatch this byte from `AfterValue`.
+                if byte == b'\'' {
+                    Step::Next(State::InStrLit { escaped: false })
+                } else {
+                    step(State::AfterValue, stack_top, byte)
+                }
+            } else if byte == b'\'' {
+                Step::Next(State::InStrLit { escaped: true })
+            } else {
+                Step::Next(State::InStrLit { escaped: false })
+            }
+        }
+
+        // `%` was just consumed; a date literal must carry at least one date
+        // character, so a bare `%` (`take(%)`) dies.
+        State::SawPercent => {
+            if is_date_char(byte) {
+                Step::Next(State::InDateLit)
+            } else {
+                Step::Dead
+            }
+        }
+
+        State::InDateLit => {
+            if is_date_char(byte) {
+                Step::Next(State::InDateLit)
+            } else {
+                step(State::AfterValue, stack_top, byte)
+            }
+        }
+
+        State::AfterDollar => {
+            if is_ident_start(byte) {
+                Step::Next(State::InIdent)
+            } else {
+                Step::Dead
+            }
+        }
+
+        State::AfterDot => match byte {
+            b if is_ws(b) => Step::Next(State::AfterDot),
+            b if is_ident_start(b) => Step::Next(State::InIdent),
+            _ => Step::Dead,
+        },
+
+        State::AfterArrow => match byte {
+            b if is_ws(b) => Step::Next(State::AfterArrow),
+            b if is_ident_start(b) => Step::Next(State::InIdent),
+            _ => Step::Dead,
+        },
+
+        // One `:` seen: either a typed-binder colon (`row: …[1]`, an identifier
+        // follows) or the first `:` of a `::` classpath separator (a second `:`
+        // follows). Only these two continuations are valid.
+        State::AfterColon => match byte {
+            // Whitespace after the first `:` splits off into [`AfterColonWs`], where a
+            // second `:` is no longer legal — `::` must be contiguous, so `meta: :pure`
+            // dies while the typed binder `row: Type` still streams.
+            b if is_ws(b) => Step::Next(State::AfterColonWs),
+            b':' => Step::Next(State::AfterColon2),
+            b if is_ident_start(b) => Step::Next(State::InIdent),
+            _ => Step::Dead,
+        },
+
+        // A single `:` followed by whitespace: a typed-binder colon only (`row: …`).
+        // A second `:` here would be a non-contiguous `::`, which is a dead state.
+        State::AfterColonWs => match byte {
+            b if is_ws(b) => Step::Next(State::AfterColonWs),
+            b if is_ident_start(b) => Step::Next(State::InIdent),
+            _ => Step::Dead,
+        },
+
+        // `::` seen: a classpath identifier must follow *immediately* — a `::`
+        // separator carries no interior whitespace (`meta::pure`, never
+        // `meta:: pure`). A third `:` or any non-identifier byte is a dead state, so
+        // `X:::Y` dies here.
+        State::AfterColon2 => {
+            if is_ident_start(byte) {
+                Step::Next(State::InIdent)
+            } else {
+                Step::Dead
+            }
+        }
+
+        // `-` → `->` (arrow) or binary arithmetic minus, whose operand is required.
+        State::SawDash => {
+            if byte == b'>' {
+                Step::Next(State::AfterArrow)
+            } else {
+                step(State::ExpectValueReq, stack_top, byte)
+            }
+        }
+
+        // `|` → `||` (boolean OR, right operand required) or the lambda-binder pipe
+        // whose body starts here (also required).
+        //
+        // Deliberate residual (finding H): a lone `|` after a completed value is
+        // always taken as the binder pipe, because at L1 a bare binder header
+        // (`x|…`) and a `$`-var use (`$x | …`) both reach [`AfterValue`] and are
+        // indistinguishable without the operand typing L2 supplies. The binder pipe
+        // is load-bearing across every filter/project lambda, so it cannot be made
+        // dead the way `&`/`!` are; the stray-`|` case is left to L2/compiler,
+        // exactly as the §5.6 operand-type escapes are.
+        State::SawPipe => {
+            if byte == b'|' {
+                Step::Next(State::ExpectValueReq)
+            } else {
+                step(State::ExpectValueReq, stack_top, byte)
+            }
+        }
+
+        // `=` → `==` (comparison, right operand required). A lone `=` reaching this
+        // operator position is always a dead state: the only single `=` in the
+        // grammar is the `let name =` binder, which is recognised by its own
+        // [`AfterBinder`] path and never flows through here.
+        State::SawEq => {
+            if byte == b'=' {
+                Step::Next(State::ExpectValueReq)
+            } else {
+                Step::Dead
+            }
+        }
+
+        State::SawBang => {
+            if byte == b'=' {
+                Step::Next(State::ExpectValueReq)
+            } else {
+                Step::Dead
+            }
+        }
+
+        State::SawGt => {
+            if byte == b'=' {
+                Step::Next(State::ExpectValueReq)
+            } else {
+                step(State::ExpectValueReq, stack_top, byte)
+            }
+        }
+
+        State::SawLt => {
+            if byte == b'=' {
+                Step::Next(State::ExpectValueReq)
+            } else {
+                step(State::ExpectValueReq, stack_top, byte)
+            }
+        }
+
+        State::SawAmp => {
+            if byte == b'&' {
+                Step::Next(State::ExpectValueReq)
+            } else {
+                Step::Dead
+            }
+        }
+    }
+}
+
+/// The mutable driver over [`step`]: a current [`State`] and a [`Frame`] stack.
+///
+/// [`Pda`] owns no offset counter and reports no errors of its own — that is the
+/// job of the [`DecoderSession`](crate::DecoderSession) that wraps it. It only
+/// applies each [`Step`] and answers whether the stream so far is in an accepting
+/// configuration.
+#[derive(Debug, Clone)]
+pub struct Pda {
+    state: State,
+    stack: Vec<Frame>,
+}
+
+impl Default for Pda {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Pda {
+    /// A fresh automaton positioned at [`State::Start`] with an empty stack.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            state: State::Start,
+            stack: Vec::new(),
+        }
+    }
+
+    /// Feed one `byte`, advancing the state and stack.
+    ///
+    /// # Errors
+    /// Returns [`DeadState`] — the automaton's `state` name and `stack_top` name
+    /// at the point of rejection — when `byte` has no valid continuation. The
+    /// automaton is left unchanged on error, so a caller may inspect it.
+    pub fn advance(&mut self, byte: u8) -> Result<(), DeadState> {
+        let top = self.stack.last().copied();
+        match step(self.state, top, byte) {
+            Step::Next(next) => {
+                self.state = next;
+                Ok(())
+            }
+            Step::Push(frame, next) => {
+                self.stack.push(frame);
+                self.state = next;
+                Ok(())
+            }
+            Step::Pop(next) => {
+                // `step` returns `Pop` only when the closer matched `top`, so the
+                // stack is non-empty here.
+                self.stack.pop();
+                self.state = next;
+                Ok(())
+            }
+            Step::Dead => Err(DeadState {
+                state: self.state.name(),
+                stack_top: top.map_or("none", Frame::name),
+            }),
+        }
+    }
+
+    /// Whether the stream so far is a complete query: every delimiter closed and
+    /// the last token finished ([`State::AfterValue`]).
+    #[must_use]
+    pub fn is_accepting(&self) -> bool {
+        self.stack.is_empty() && self.state == State::AfterValue
+    }
+
+    /// Reset to the initial configuration, retaining the stack's allocation
+    /// (§9.1) for reuse across streams.
+    pub fn reset(&mut self) {
+        self.state = State::Start;
+        self.stack.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Frame, Pda, State, Step, WS, is_date_char, is_ident_start, is_ident_tail, step};
+
+    /// Drive `bytes` through a fresh [`Pda`], returning it (or the first dead
+    /// state) so a test can assert on the terminal configuration.
+    fn run(bytes: &[u8]) -> Result<Pda, (usize, &'static str, &'static str)> {
+        let mut pda = Pda::new();
+        for (offset, &byte) in bytes.iter().enumerate() {
+            if let Err(dead) = pda.advance(byte) {
+                return Err((offset, dead.state, dead.stack_top));
+            }
+        }
+        Ok(pda)
+    }
+
+    fn accepts(text: &str) -> bool {
+        matches!(run(text.as_bytes()), Ok(pda) if pda.is_accepting())
+    }
+
+    fn dies(text: &str) -> bool {
+        run(text.as_bytes()).is_err()
+    }
+
+    #[test]
+    fn ws_constant_is_the_four_inter_token_spaces() {
+        assert_eq!(WS, b" \t\n\r");
+    }
+
+    #[test]
+    fn char_class_helpers_agree_with_grammar() {
+        assert!(is_ident_start(b'a') && is_ident_start(b'_') && is_ident_start(b'Z'));
+        assert!(!is_ident_start(b'0') && !is_ident_start(b'$'));
+        assert!(is_ident_tail(b'0') && is_ident_tail(b'z') && is_ident_tail(b'_'));
+        assert!(!is_ident_tail(b'-'));
+        assert!(
+            is_date_char(b'0') && is_date_char(b'-') && is_date_char(b'T') && is_date_char(b':')
+        );
+        assert!(!is_date_char(b'Z'));
+    }
+
+    #[test]
+    fn start_admits_only_pipe_or_brace() {
+        // A simple query opens with `|` on its source; a block query opens with
+        // `{`, awaiting the `|` of `{|`.
+        assert!(matches!(
+            step(State::Start, None, b'|'),
+            Step::Next(State::ExpectSource)
+        ));
+        assert!(matches!(
+            step(State::Start, None, b'{'),
+            Step::Push(Frame::Brace, State::AfterBraceOpen)
+        ));
+        assert!(matches!(step(State::Start, None, b'x'), Step::Dead));
+        assert!(matches!(step(State::Start, None, b'('), Step::Dead));
+    }
+
+    #[test]
+    fn a_top_level_source_must_be_an_identifier() {
+        // The pipeline source is always a classpath; a bare literal, `$`-var,
+        // star, or parenthesised expression in source position is a dead state.
+        assert!(dies("|42 "));
+        assert!(dies("|*"));
+        assert!(dies("|( )"));
+        assert!(dies("|'x'"));
+        assert!(dies("|$x"));
+        // …but an identifier source opens a real pipeline.
+        assert!(accepts("|X.all()->take(1)"));
+    }
+
+    #[test]
+    fn a_completed_term_is_not_followed_by_a_bare_identifier() {
+        // Missing-arrow ident-salad dies: a fresh identifier may not abut a
+        // completed term outside a block-query `let` binder.
+        assert!(dies("|foo bar baz "));
+        assert!(dies("|X.all() take(3)"));
+        assert!(dies("|X.all()->take(1) take(2)"));
+        // The one legal abutment — `let name` under a block query's brace — lives.
+        assert!(accepts("{|let m = X.all()->take(1); $m->take(1);}"));
+    }
+
+    #[test]
+    fn a_dangling_operator_before_a_closer_dies() {
+        assert!(dies("|X.all()->take(1 +)"));
+        assert!(dies("|X.all()->filter(x|$x.a && )"));
+        assert!(dies("|X.all()->filter(x|$x.a || )"));
+    }
+
+    #[test]
+    fn malformed_numeric_and_date_literals_die() {
+        assert!(dies("|X.all()->take(-)"));
+        assert!(dies("|X.all()->take(1.)"));
+        assert!(dies("|X.all()->take(--5)"));
+        assert!(dies("|X.all()->take(-.5)"));
+        assert!(dies("|X.all()->take(%)"));
+        // …well-formed literals still stream.
+        assert!(accepts("|X.all()->take(-5)"));
+        assert!(accepts("|X.all()->filter(x|$x.v > 1.5)"));
+    }
+
+    #[test]
+    fn a_single_equals_is_dead_outside_a_let_binder() {
+        // A lone `=` as a comparison operator under a `Paren` dies…
+        assert!(dies("|X.all()->filter(x|$x.a = 1)"));
+        // …but the `let name =` binder single `=` under a block brace is valid.
+        assert!(accepts("{|let m = X.all()->take(1); $m->take(1);}"));
+    }
+
+    #[test]
+    fn colon_runs_beyond_a_double_colon_die() {
+        assert!(dies("|X:::Y.all()->take(1)"));
+        // `::` classpath separators and the typed-binder `:` still stream.
+        assert!(accepts(
+            "|db::Db->tableReference('default','T')->tableToTDS()->limit(1)"
+        ));
+    }
+
+    #[test]
+    fn a_block_query_requires_the_leading_pipe() {
+        assert!(dies("{X.all()->take(1)}"));
+        assert!(accepts("{|X.all()->take(1);}"));
+    }
+
+    #[test]
+    fn whitespace_is_skipped_at_the_source_and_block_openers() {
+        // Whitespace after the top-level `|`, after the block `{`, and after the
+        // block's `{|` is inter-token space and is skipped before the source.
+        assert!(accepts("| X.all()->take(1)"));
+        assert!(accepts("{ |X.all()->take(1);}"));
+        assert!(accepts("{ | X.all()->take(1);}"));
+    }
+
+    #[test]
+    fn a_classpath_separator_carries_no_interior_whitespace() {
+        // A single typed-binder `:` tolerates following whitespace (`row: Type`),
+        // but a `::` separator does not (`meta::pure`, never `meta:: pure`).
+        assert!(dies("|meta:: pure::Thing.all()->take(1)"));
+        // A `:` (single or double) still demands an identifier, not a digit.
+        assert!(dies("|X:5.all()->take(1)"));
+        assert!(dies("|X::5.all()->take(1)"));
+    }
+
+    #[test]
+    fn empty_stream_is_not_accepting() {
+        assert!(!Pda::new().is_accepting());
+        assert!(!accepts(""));
+    }
+
+    #[test]
+    fn arm_c_source_and_project_accepts() {
+        assert!(accepts("|X.all()->project([x|$x.name], ['n'])"));
+    }
+
+    #[test]
+    fn arm_a_envelope_accepts() {
+        assert!(accepts(
+            "|db::Db->tableReference('default', 'T')->tableToTDS()->limit(5)"
+        ));
+    }
+
+    #[test]
+    fn bracket_context_dependence_rejects_crossed_closers() {
+        // `(` opened, `]` cannot close a Paren.
+        assert!(dies("|X.all()->take(2]"));
+        // `[` opened, `)` cannot close a Bracket.
+        assert!(dies("|X.all()->project([x|$x.n)"));
+        // A closer with an empty stack is dead.
+        assert!(dies("|X.all())"));
+    }
+
+    #[test]
+    fn matched_nested_brackets_accept() {
+        assert!(accepts(
+            "|X.all()->groupBy([], [agg(x|$x.v, y|$y->sum())], ['s'])"
+        ));
+    }
+
+    #[test]
+    fn string_quote_doubling_is_consumed_in_body() {
+        // The doubled `''` is one embedded quote, not a close-then-reopen.
+        assert!(accepts("|X.all()->filter(x|$x.name == 'O''Brien')"));
+        // An un-doubled closing quote ends the string; the trailing `)` closes.
+        assert!(accepts("|X.all()->restrict('Rank')"));
+    }
+
+    #[test]
+    fn parens_inside_a_string_do_not_touch_the_stack() {
+        // `'COUNT()'` must not push/pop Paren frames.
+        assert!(accepts(
+            "|db::Db->tableReference('default', 'T')->tableToTDS()\
+             ->groupBy([], agg('COUNT()', row: meta::pure::tds::TDSRow[1]|$row, \
+             y: meta::pure::tds::TDSRow[*]|$y->count()))"
+        ));
+    }
+
+    #[test]
+    fn whitespace_is_skipped_between_tokens_only() {
+        assert!(accepts("|X.all()\n  ->filter( x | $x.age > 18 )"));
+        // …but a token is never split: a space inside a number literal leaves a
+        // stray digit that `AfterValue` cannot resume.
+        assert!(dies("|X.all()->take(1 0)"));
+    }
+
+    #[test]
+    fn empty_key_group_by_accepts() {
+        assert!(accepts(
+            "|X.all()->groupBy([], [agg(x|$x.v, y|$y->count())], ['c'])"
+        ));
+    }
+
+    #[test]
+    fn typed_multiplicity_binder_accepts_one_and_star() {
+        assert!(accepts(
+            "|db::Db->tableReference('default','T')->tableToTDS()\
+             ->filter(row: meta::pure::tds::TDSRow[1]|$row.getInteger('c') == 1)"
+        ));
+        assert!(accepts(
+            "|db::Db->tableReference('default','T')->tableToTDS()\
+             ->groupBy([], agg('C', row: meta::pure::tds::TDSRow[1]|$row, \
+             y: meta::pure::tds::TDSRow[*]|$y->count()))"
+        ));
+    }
+
+    #[test]
+    fn brace_multi_binder_join_accepts() {
+        assert!(accepts(
+            "|a::Db->tableReference('default','A')->tableToTDS()->join(\
+             a::Db->tableReference('default','B')->tableToTDS(), \
+             meta::relational::metamodel::join::JoinType.INNER, \
+             {r1: meta::pure::tds::TDSRow[1], r2: meta::pure::tds::TDSRow[1]|\
+             $r1.getInteger('x') == $r2.getInteger('y')})"
+        ));
+    }
+
+    #[test]
+    fn dollar_requires_an_identifier() {
+        assert!(dies("|X.all()->filter(x|$)"));
+        assert!(dies("|X.all()->filter(x|$5 > 1)"));
+    }
+
+    #[test]
+    fn or_operator_is_distinct_from_the_lambda_pipe() {
+        // First `|` is the binder pipe, `||` is boolean OR.
+        assert!(accepts("|X.all()->filter(x|($x.a == 1) || ($x.b == 2))"));
+    }
+
+    #[test]
+    fn bang_is_both_the_not_prefix_and_the_ne_operator() {
+        // Unary NOT in value position (after `&&`).
+        assert!(accepts(
+            "|X.all()->filter(s|($s.a == 0) && !$s.name->in($xs))"
+        ));
+        // Binary `!=` in operator position (after a value).
+        assert!(accepts("|X.all()->filter(x|$x.a != 1)"));
+        // A lone `!` not completing `!=` in operator position is dead.
+        assert!(dies("|X.all()->filter(x|$x.a ! 1)"));
+    }
+
+    #[test]
+    fn block_query_with_let_binding_accepts() {
+        assert!(accepts(
+            "{|let m = X.all().pop->max(); Y.all()->filter(b|$b.v == $m)\
+             ->project([x|$x.c], ['c']);}"
+        ));
+    }
+
+    #[test]
+    fn block_let_binder_whitespace_and_boundaries() {
+        // `{|` alone cannot close — a block needs at least one statement.
+        assert!(dies("{|}"));
+        assert!(dies("{| }"));
+        // The binder name tolerates extra surrounding whitespace, and `=` may abut it.
+        assert!(accepts("{|let  m = X.all()->take(1);}")); // two spaces after `let`
+        assert!(accepts("{|let m  = X.all()->take(1);}")); // two spaces before `=`
+        assert!(accepts("{|let m=X.all()->take(1);}")); // `=` abuts the name
+        // The binder name is an identifier, never a literal or a missing name.
+        assert!(dies("{|let 5 = X.all()->take(1);}"));
+        assert!(dies("{|let = X.all()->take(1);}"));
+    }
+
+    #[test]
+    fn typed_binder_colon_whitespace_boundaries() {
+        // A binder `:` may abut its type or carry one-or-more spaces before it.
+        assert!(accepts(
+            "|db::Db->tableReference('default','T')->tableToTDS()\
+             ->filter(row:meta::pure::tds::TDSRow[1]|$row.getInteger('c') == 1)"
+        ));
+        assert!(accepts(
+            "|db::Db->tableReference('default','T')->tableToTDS()\
+             ->filter(row:  meta::pure::tds::TDSRow[1]|$row.getInteger('c') == 1)"
+        ));
+        // A `::` separator must be contiguous: a double colon then a space dies.
+        assert!(dies(
+            "|db::Db->tableReference('default','T')->tableToTDS()\
+             ->filter(row: meta:: pure::tds::TDSRow[1]|$row.getInteger('c') == 1)"
+        ));
+        // A binder `:` demands an identifier type, never a bare digit.
+        assert!(dies(
+            "|db::Db->tableReference('default','T')->tableToTDS()->filter(row:5|$row)"
+        ));
+    }
+
+    #[test]
+    fn brace_lambda_tolerates_whitespace_after_the_open() {
+        // A space after the `{` is skipped before the required binder identifier.
+        assert!(accepts(
+            "|a::Db->tableReference('default','A')->tableToTDS()->join(\
+             a::Db->tableReference('default','B')->tableToTDS(), \
+             meta::relational::metamodel::join::JoinType.INNER, \
+             { r1: meta::pure::tds::TDSRow[1], r2: meta::pure::tds::TDSRow[1]|\
+             $r1.getInteger('x') == $r2.getInteger('y')})"
+        ));
+    }
+
+    #[test]
+    fn date_literal_operand_accepts() {
+        assert!(accepts(
+            "|db::Db->tableReference('default','T')->tableToTDS()\
+             ->filter(r: meta::pure::tds::TDSRow[1]|$r.getDateTime('d') < %2018-03-17T07:13:53)"
+        ));
+    }
+
+    #[test]
+    fn unterminated_string_or_open_paren_is_not_accepting() {
+        assert!(!accepts("|X.all()->restrict('Rank"));
+        assert!(!accepts("|X.all()->take(2"));
+    }
+
+    #[test]
+    fn reset_returns_to_the_initial_configuration() {
+        let mut pda = Pda::new();
+        for &byte in b"|X.all()->take(2)" {
+            pda.advance(byte).expect("live");
+        }
+        assert!(pda.is_accepting());
+        pda.reset();
+        assert!(!pda.is_accepting());
+        assert!(pda.advance(b'x').is_err());
+    }
+
+    #[test]
+    fn start_skips_leading_whitespace_before_the_opener() {
+        assert!(accepts(" \n\t|X.all()->take(1)"));
+    }
+
+    #[test]
+    fn top_level_separators_require_an_open_frame() {
+        // A `,` or `;` is legal only inside a frame; with an empty stack it dies.
+        assert!(dies("|X.all(),"));
+        assert!(dies("|X.all();"));
+    }
+
+    #[test]
+    fn dot_arrow_colon_skip_whitespace_then_demand_an_identifier() {
+        // Whitespace after `.` / `->` is skipped, then an identifier is required.
+        assert!(accepts("|X. all()->take(1)"));
+        assert!(accepts("|X.all()->  take(1)"));
+        // …and a non-identifier byte in that position is a dead state.
+        assert!(dies("|X.all().5"));
+        assert!(dies("|X.all()->5"));
+        assert!(dies("|X::5"));
+    }
+
+    #[test]
+    fn a_dead_state_names_its_state_and_top_frame() {
+        // `.` then a digit dies in `AfterDot`, with the enclosing stack empty.
+        assert_eq!(
+            run(b"|X.all().5").expect_err("dies"),
+            (9, "AfterDot", "none")
+        );
+        // A `,` with nothing to separate dies in `ExpectValue` under a `Paren`.
+        assert_eq!(
+            run(b"|X.all(,").expect_err("dies"),
+            (7, "ExpectValue", "Paren")
+        );
+        // An unmatched closer dies with an empty stack (`none`).
+        assert_eq!(
+            run(b"|X.all())").expect_err("dies"),
+            (8, "AfterValue", "none")
+        );
+    }
+}

@@ -1,22 +1,9 @@
-//! Error types for the M0 oracle harness.
+//! Corpus-loader error type for the oracle harness.
 //!
-//! Two independent failure domains, kept separate so each stays honest about its
-//! own surface: [`DecodeError`] for driving a byte recognizer, [`CorpusError`]
-//! for loading the gold corpus.
-
-/// An error from driving a byte recognizer.
-#[derive(Debug, thiserror::Error)]
-pub enum DecodeError {
-    /// The recognizer had no valid continuation for `byte` at `offset`.
-    #[error("recognizer reached a dead state at offset {offset} (byte {byte:#04x})")]
-    DeadState {
-        /// Byte offset, taken from the recognizer's own consumed counter, at
-        /// which deadness was reached.
-        offset: usize,
-        /// The byte that had no valid continuation.
-        byte: u8,
-    },
-}
+//! [`CorpusError`] is harness-only: loading the gold corpus is not decoder API,
+//! so it stays under `tests/support/` (ADR-0003) rather than shipping in the
+//! `purecard` crate. The decoder's own `DecodeError` moved into the published
+//! core at M1 (`src/error.rs`); test binaries drive it via `use purecard::DecodeError`.
 
 /// An error from loading the gold corpus.
 #[derive(Debug, thiserror::Error)]
@@ -37,18 +24,7 @@ pub enum CorpusError {
 
 #[cfg(test)]
 mod tests {
-    use super::{CorpusError, DecodeError};
-
-    #[test]
-    fn dead_state_display_reports_offset_and_hex_byte() {
-        let err = DecodeError::DeadState {
-            offset: 7,
-            byte: 0x2c,
-        };
-        let shown = err.to_string();
-        assert!(shown.contains("offset 7"), "{shown}");
-        assert!(shown.contains("0x2c"), "{shown}");
-    }
+    use super::CorpusError;
 
     #[test]
     fn corpus_json_error_reports_line_number() {

@@ -17,16 +17,18 @@ categories = ["parser-implementations", "text-processing"]
 # into the tarball — exactly what `just check-core-deplight` guards against.
 include = ["src/**/*", "/README.md", "/LICENSE"]
 
+# The core's dependency allowlist (ADR-0004, M1): `thiserror` only. `DecodeError`
+# (src/error.rs), the byte-PDA's error type, ships in the crate and the
+# constitution (§1) mandates `thiserror` for library error types — the core's
+# first, anticipated runtime dependency. `cargo xtask check-core-deplight`
+# enforces `[dependencies] ⊆ { thiserror }`, so any other runtime dep still fails
+# the gate. Oracle-harness deps stay under `[dev-dependencies]` (ADR-0003).
 [dependencies]
-# Empty by design: the published M0 core is `GuaranteeLevel` (lib.rs) + `Vocab`
-# (vocab.rs), both pure `std`, so `purecard` ships with zero runtime dependencies.
-# All oracle-harness code lives under `tests/` on `[dev-dependencies]` (ADR-0003);
-# `cargo xtask check-core-deplight` enforces this table stays empty.
+thiserror = "2.0.18"
 
 [dev-dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json.workspace = true
-thiserror = "2.0.18"
 anyhow.workspace = true
 # The `legend` lane's live-HTTP Legend client boundary. The engine is a local,
 # plain-HTTP service (http://localhost:6300), so TLS is disabled
