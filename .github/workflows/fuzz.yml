@@ -82,11 +82,15 @@ jobs:
           key: fuzz-corpus-${{ matrix.target }}-${{ hashFiles('fuzz/**/*.rs') }}
           restore-keys: |
             fuzz-corpus-${{ matrix.target }}-
+      # Pin the target triple to gnu: cargo-fuzz otherwise defaults to the musl
+      # host on recent runners, whose statically-linked libc is incompatible with
+      # the AddressSanitizer cargo-fuzz injects ("sanitizer is incompatible with
+      # statically linked libc"). gnu's dynamic libc is ASan-compatible.
       - name: Compile the fuzz target (bit-rot gate)
-        run: cargo +nightly fuzz build ${{ matrix.target }}
+        run: cargo +nightly fuzz build --target x86_64-unknown-linux-gnu ${{ matrix.target }}
       - name: Fuzz (time-boxed)
         run: |
-          cargo +nightly fuzz run ${{ matrix.target }} -- \
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- \
             -max_total_time=${{ github.event_name == 'schedule' && '900' || '60' }}
       - name: Upload crash artifacts
         if: failure()
