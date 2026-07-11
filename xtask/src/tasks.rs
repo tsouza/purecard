@@ -100,6 +100,30 @@ pub fn test_legend() -> Result<()> {
     }
 }
 
+/// The cargo-fuzz targets under `fuzz/fuzz_targets/`, kept in sync with that
+/// directory. A named list rather than a directory scan: the loop must run every
+/// target, and a new target is added here in the same change that adds the file.
+const FUZZ_TARGETS: &[&str] = &["accept_token", "allowed_mask", "schema_from_json"];
+
+/// Time-box every cargo-fuzz target for `secs` seconds each.
+///
+/// A loop over the target list (real control flow, so it lives in xtask, not the
+/// justfile — constitution §2). cargo-fuzz needs a nightly toolchain, invoked via
+/// `cargo +nightly fuzz run`; the fuzz crate is excluded from the workspace so the
+/// core stays stable-pinned and `forbid(unsafe)`-clean (ADR-0006). A crash in any
+/// target fails the whole task (fail-fast).
+///
+/// # Errors
+///
+/// Returns the first target's failure (a crash, or a missing nightly / cargo-fuzz).
+pub fn fuzz_ci(secs: u64) -> Result<()> {
+    let budget = format!("-max_total_time={secs}");
+    for target in FUZZ_TARGETS {
+        run("cargo", &["+nightly", "fuzz", "run", target, "--", &budget])?;
+    }
+    Ok(())
+}
+
 /// The minimum acceptable line-coverage percentage. Enforced as a hard floor so
 /// coverage can only ratchet upward. Tighten with human sign-off; never loosen.
 const COVERAGE_FLOOR_PCT: &str = "70";
@@ -1051,5 +1075,70 @@ version = \"1\"
         // `[dev-dependencies]` or `[workspace.dependencies]` entry must not count.
         let src = "[dev-dependencies]\nserde = \"1\"\n\n[workspace.dependencies]\nanyhow = \"1\"\n";
         assert!(core_dependency_entries(src).is_empty());
+    }
+
+    /// The fuzz-target names from the `target: [ … ]` build-matrix line of a
+    /// `fuzz.yml` workflow. A single-line scan (the matrix is written inline), used
+    /// only by the drift gate below.
+    fn fuzz_matrix_targets(workflow_src: &str) -> Vec<String> {
+        workflow_src
+            .lines()
+            .find_map(|line| {
+                let inner = line
+                    .trim()
+                    .strip_prefix("target:")?
+                    .trim()
+                    .strip_prefix('[')?
+                    .strip_suffix(']')?;
+                Some(
+                    inner
+                        .split(',')
+                        .map(|name| name.trim().to_string())
+                        .filter(|name| !name.is_empty())
+                        .collect(),
+                )
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn fuzz_targets_stay_in_sync_across_the_list_dir_and_workflow() {
+        // FUZZ_TARGETS is hand-mirrored in three places: this const, the
+        // `fuzz/fuzz_targets/*.rs` files, and the fuzz.yml build matrix. Deriving one
+        // from another across a Rust const, a directory, and a YAML file isn't clean,
+        // so this test makes the three agree — closing the drift class (constitution
+        // §5) the moment a target is added or removed in only one of them.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask has a parent workspace root");
+
+        let mut declared: Vec<String> = FUZZ_TARGETS.iter().map(|t| (*t).to_string()).collect();
+        declared.sort();
+
+        let mut on_disk: Vec<String> = std::fs::read_dir(root.join("fuzz/fuzz_targets"))
+            .expect("reading fuzz/fuzz_targets/")
+            .map(|entry| entry.expect("a dir entry").path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
+            .map(|path| {
+                path.file_stem()
+                    .expect("a .rs file has a stem")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        on_disk.sort();
+        assert_eq!(
+            declared, on_disk,
+            "FUZZ_TARGETS must list exactly the *.rs files under fuzz/fuzz_targets/"
+        );
+
+        let workflow = std::fs::read_to_string(root.join(".github/workflows/fuzz.yml"))
+            .expect("reading .github/workflows/fuzz.yml");
+        let mut in_matrix = fuzz_matrix_targets(&workflow);
+        in_matrix.sort();
+        assert_eq!(
+            declared, in_matrix,
+            "the fuzz.yml build matrix must list exactly FUZZ_TARGETS"
+        );
     }
 }

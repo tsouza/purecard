@@ -92,6 +92,17 @@ Target: **mask generation ≤ a few hundred µs/token**, so it is never the bott
 
 For L2, additionally **cache per-(state, class-scope) identifier masks**: the set of schema-legal identifiers after `$x.` depends only on the class `$x` is bound to, so it can be memoized per (position, class) pair rather than recomputed every step.
 
+### 4.6 Shipped M5 baseline (the locked performance record)
+
+The criterion suite (`benches/allowed_mask.rs`) locks the shipped per-step baseline. The intended regression guard is CodSpeed (the `bench` job — deterministic *instruction count*, walltime-independent, so it reproduces faithfully in CI), but it is **opt-in, not yet an enforced merge check**: the `bench` job is gated behind `vars.CODSPEED_ENABLED == 'true'`, so until the CodSpeed app is installed and that variable is set, it posts perf deltas without blocking a PR. Once enabled, CodSpeed's instruction-count delta is what fails a PR. Recommended CodSpeed threshold at first-lock: **±10 %** instruction count, ratcheted tighter over time (a PROTECTED gate only tightens).
+
+The families and the *relative* cost each establishes (no absolute figures are quoted here: there is no gate asserting a hand-copied number against the bench output, so only the shape is stated — the bench itself holds the measurements):
+
+- **`allowed_mask`** — steady-state per step, and the cheapest at shallow and identifier positions. The deep-stack worst case (nested open frames, maximal context-dependent re-probe) is the costliest per-step path; its design budget is **≤ a few hundred µs/token** (§4.5) — a target the bench measures against, not a guarantee asserted here — and that budget is itself dwarfed by the model's forward pass.
+- **`accept_token`** — a whole-token advance is cheap: a byte-fold through a PDA clone.
+- **`cache_win`** — the M2 partition cache: a warm step (word-wise copy) is dramatically cheaper than a cold first-visit build (which probes the whole ~150k-token vocabulary). This is why the lazy per-state cache is load-bearing, not an optimization.
+- **`l2_overhead`** — the schema-narrowing block at an identifier position adds a small constant over the L1 mask (the `intersect` plus the scope-legal set build); L2 ⊆ L1 by construction, so it only ever narrows.
+
 ---
 
 ## 9. Public API (Rust + PyO3) and integration boundary

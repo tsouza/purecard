@@ -78,7 +78,11 @@ members = ["xtask"]
 # `lints` is a dylint library (links `clippy_utils`, needs rustc_private +
 # nightly); it is built out-of-band via `cargo dylint`, never by a stable
 # `cargo build`, so it is excluded from the workspace.
-exclude = ["lints"]
+# `fuzz` is the cargo-fuzz crate: `libfuzzer-sys`'s `fuzz_target!` generates
+# `unsafe` and needs a nightly toolchain, so it is built out-of-band via `cargo
+# fuzz` (nightly) and excluded here — keeping the published core `#![forbid(unsafe_code)]`
+# and stable-pinned (ADR-0006).
+exclude = ["lints", "fuzz"]
 
 [workspace.package]
 edition = "2024"

@@ -366,6 +366,15 @@ pub enum Step {
 /// skipped between — never inside — tokens.
 const WS: &[u8; 4] = b" \t\n\r";
 
+/// The canonical inter-token *value boundary* byte (a space): the terminator
+/// [`Pda::is_accepting`] feeds a candidate state to decide, *through [`step`]
+/// itself*, whether the state has finished a value. A value-terminal lexical
+/// state delegates a whitespace byte to [`State::AfterValue`]; a mid-token or
+/// hub state does not. Deriving acceptance from `step` this way keeps a single
+/// source of truth for terminality (constitution §4, DRY) — no hand-maintained
+/// list of accepting states to drift.
+const VALUE_BOUNDARY: u8 = b' ';
+
 fn is_ws(byte: u8) -> bool {
     WS.contains(&byte)
 }
@@ -935,11 +944,39 @@ impl Pda {
         }
     }
 
-    /// Whether the stream so far is a complete query: every delimiter closed and
-    /// the last token finished ([`State::AfterValue`]).
+    /// Whether the stream so far is a complete query: **every frame closed AND
+    /// the last token fully lexed at a value boundary**.
+    ///
+    /// Terminality is derived from the single source of truth [`step`], not a
+    /// hand-maintained list: a configuration is accepting iff its stack is empty
+    /// and feeding a value-boundary byte (`VALUE_BOUNDARY`, a space) from the
+    /// current state lands in
+    /// [`State::AfterValue`]. That auto-includes every value-terminal lexical
+    /// state — [`AfterValue`](State::AfterValue) itself and the *closed-token*
+    /// states [`InIdent`](State::InIdent), [`InNumberInt`](State::InNumberInt),
+    /// [`InNumberFrac`](State::InNumberFrac), [`InDateLit`](State::InDateLit), and
+    /// a closed string ([`InStrLit { escaped: true }`](State::InStrLit)) — and
+    /// auto-excludes the rest: [`InSourceIdent`](State::InSourceIdent) (a bare
+    /// `|X` source is *not* a completed value, by design), an open string
+    /// ([`InStrLit { escaped: false }`](State::InStrLit)),
+    /// [`InMultiplicity`](State::InMultiplicity), and the value hubs
+    /// ([`ExpectValue`](State::ExpectValue)/[`ExpectValueReq`](State::ExpectValueReq)),
+    /// which stay non-accepting.
+    ///
+    /// The rule reads [`step`] but never mutates it, so it can only ever *add*
+    /// accepting configurations, never turn a live byte dead or clear a mask
+    /// bit — gold soundness is unaffected (every gold query ends in `)` →
+    /// [`AfterValue`](State::AfterValue), still accepting). Because the
+    /// empty-stack guard holds, the only newly-reachable completion is a trailing
+    /// top-level identifier (`|X.all()->name`); a top-level number/string/date
+    /// never sits over an empty stack, so those stay non-accepting in practice.
     #[must_use]
     pub fn is_accepting(&self) -> bool {
-        self.stack.is_empty() && self.state == State::AfterValue
+        self.stack.is_empty()
+            && matches!(
+                step(self.state, None, VALUE_BOUNDARY),
+                Step::Next(State::AfterValue)
+            )
     }
 
     /// Reset to the initial configuration, retaining the stack's allocation
@@ -1327,6 +1364,88 @@ mod tests {
     fn empty_stream_is_not_accepting() {
         assert!(!Pda::new().is_accepting());
         assert!(!accepts(""));
+    }
+
+    #[test]
+    fn is_accepting_derives_terminality_from_step_per_state() {
+        // Value-terminal lexical states over an empty stack accept at EOS: the
+        // closed-token states plus the `AfterValue` hub. Enumerated white-box
+        // (mirroring `index_is_a_bijection`) so a `step` change that drops a
+        // terminal delegation reddens here.
+        for terminal in [
+            State::AfterValue,
+            State::InIdent,
+            State::InNumberInt,
+            State::InNumberFrac,
+            State::InDateLit,
+            State::InStrLit { escaped: true },
+        ] {
+            assert!(
+                Pda::at(terminal).is_accepting(),
+                "{} is value-terminal and must accept at EOS",
+                terminal.name()
+            );
+        }
+        // Non-terminal states must NOT accept: a bare source (`|X`), the value
+        // hubs, an open string, and the `[*]` multiplicity slot. `InSourceIdent`
+        // is excluded by design — a bare `|X` source is not a completed value.
+        for open in [
+            State::InSourceIdent,
+            State::ExpectValue,
+            State::ExpectValueReq,
+            State::InStrLit { escaped: false },
+            State::InMultiplicity,
+            State::Start,
+        ] {
+            assert!(
+                !Pda::at(open).is_accepting(),
+                "{} is not a completed value and must not accept at EOS",
+                open.name()
+            );
+        }
+    }
+
+    #[test]
+    fn a_frame_still_open_is_never_accepting_even_at_a_terminal_state() {
+        // The empty-stack guard is load-bearing: a completed number/ident sitting
+        // under an open `(` is mid-query, not a complete stream.
+        let mut pda = Pda::new();
+        for &byte in b"|X.all()->take(3" {
+            pda.advance(byte).expect("live");
+        }
+        // At `InNumberInt` with a Paren still open — a terminal *state* but a
+        // non-empty stack, so not accepting.
+        assert_eq!(pda.state(), State::InNumberInt);
+        assert!(!pda.is_accepting());
+    }
+
+    #[test]
+    fn a_trailing_top_level_identifier_completes() {
+        // The one newly-reachable completion the EOS widening adds: a top-level
+        // step whose last token is a bare identifier (`->name`) with every frame
+        // already closed. `InIdent` over an empty stack now accepts.
+        assert!(accepts("|X.all()->name"));
+        let mut pda = Pda::new();
+        for &byte in b"|X.all()->name" {
+            pda.advance(byte).expect("live");
+        }
+        assert_eq!(pda.state(), State::InIdent);
+        assert!(pda.stack_top().is_none());
+        assert!(pda.is_accepting());
+    }
+
+    #[test]
+    fn a_bare_source_identifier_never_completes() {
+        // `|X` lands in `InSourceIdent`, which is deliberately non-accepting, and
+        // a trailing space still dies there (ws → Dead), so a bare source is
+        // neither complete nor live.
+        let mut pda = Pda::new();
+        for &byte in b"|X" {
+            pda.advance(byte).expect("live");
+        }
+        assert_eq!(pda.state(), State::InSourceIdent);
+        assert!(!pda.is_accepting());
+        assert!(dies("|X "));
     }
 
     #[test]

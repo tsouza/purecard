@@ -29,6 +29,8 @@ mod error;
 mod fixture_dbs;
 #[path = "support/l2.rs"]
 mod l2;
+#[path = "support/lex.rs"]
+mod lex;
 
 use corpus::load_gold;
 use fixture_dbs::FIXTURE_DBS;

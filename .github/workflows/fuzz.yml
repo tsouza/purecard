@@ -1,0 +1,120 @@
+name: Fuzz
+
+# Bounded fuzzing of the decoder's no-panic / mask-bounds invariants. cargo-fuzz
+# needs a nightly toolchain (libfuzzer generates `unsafe`), so the fuzz crate is
+# excluded from the workspace and driven with `+nightly` here — the core stays
+# stable-pinned and `#![forbid(unsafe_code)]` (ADR-0006).
+#
+# On a code PR: compile every target (catches bit-rot at zero run cost) plus a
+# 60 s time-boxed run each. A nightly cron runs longer (900 s). A crash uploads
+# the offending input and reddens the run.
+
+on:
+  pull_request:
+  schedule:
+    # 03:17 UTC daily — a deeper backstop than the per-PR budget.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read # dorny/paths-filter reads changed files via the PR API
+
+env:
+  CARGO_TERM_COLOR: always
+  # Per-target libFuzzer time budgets, in seconds: a light per-PR gate for fast
+  # regression insurance, and a deeper nightly-cron backstop.
+  FUZZ_TIME_BUDGET_PR: "60"
+  FUZZ_TIME_BUDGET_NIGHTLY: "900"
+
+jobs:
+  # --- Path filter: only fuzz when core or fuzz code changed -----------------
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { persist-credentials: false, fetch-depth: 0 }
+      # A scheduled run has no PR base to diff against, so force the fuzz job on.
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name != 'schedule'
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'fuzz/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/fuzz.yml'
+
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    needs: changes
+    # Run on a scheduled/dispatch trigger, or when core/fuzz code changed on a PR.
+    if: >-
+      github.event_name != 'pull_request' ||
+      needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [accept_token, allowed_mask, schema_from_json]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Nightly is the one channel rust-toolchain.toml (stable) does not provide,
+      # scoped to this job only (constitution §1-sanctioned).
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      # First-party installer; it caches the binary on the pinned version key, so
+      # cargo-fuzz is never re-downloaded uncached (constitution §2). Pinned to a
+      # verified-latest version rather than floating.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.2
+      # Restore the per-target corpus from the most recent prior run (prefix
+      # match), so runs build on accumulated coverage without an unbounded
+      # external fetch. Saving is a separate post-run step: `actions/cache` only
+      # writes on a key miss, so a combined step keyed on the source hash would
+      # drop the inputs a run newly discovers whenever the sources are unchanged.
+      - uses: actions/cache/restore@v6
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+      # Pin the target triple to gnu: cargo-fuzz otherwise defaults to the musl
+      # host on recent runners, whose statically-linked libc is incompatible with
+      # the AddressSanitizer cargo-fuzz injects ("sanitizer is incompatible with
+      # statically linked libc"). gnu's dynamic libc is ASan-compatible.
+      - name: Compile the fuzz target (bit-rot gate)
+        run: cargo +nightly fuzz build --target x86_64-unknown-linux-gnu ${{ matrix.target }}
+      - name: Fuzz (time-boxed)
+        run: |
+          cargo +nightly fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- \
+            -max_total_time=${{ github.event_name == 'schedule' && env.FUZZ_TIME_BUDGET_NIGHTLY || env.FUZZ_TIME_BUDGET_PR }}
+      # Persist inputs this run discovered under a fresh per-run key (always, so a
+      # crashing run still banks the corpus that reached it); the next run's
+      # prefix-matched restore picks this up.
+      - name: Save fuzz corpus
+        if: always()
+        uses: actions/cache/save@v6
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
