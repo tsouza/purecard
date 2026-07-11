@@ -49,8 +49,11 @@ as built — `src/` is authoritative where a detail is load-bearing.)*
 directly by token id — there is **no** trie (`src/vocab.rs`: `bytes(id)` is a
 direct table index; per-state acceptance is resolved by probing the byte-level PDA
 on first visit to a state, not by a trie walk). A token is admissible iff feeding
-its raw bytes advances the byte-level automaton to a non-dead state — sidestepping
-subword-boundary alignment entirely.
+its raw bytes advances the byte-level automaton to a non-dead state. This avoids a
+trie traversal, but it does **not** eliminate host tokenizer/vocabulary alignment
+risk: the host must still supply each token's exact bytes (the §11 tokenizer-exactness
+concern), and neither the byte-level replay nor the M5 self-check proves token-id
+soundness — that is exercised only live in the M4 e2e lane.
 
 **Introduced by.** [`spec/architecture.md`](spec/architecture.md) §4.1, §4.4, §9.1.
 

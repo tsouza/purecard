@@ -94,8 +94,8 @@ EnumValue = string                                  // the enum literal, e.g. "A
 
 An `AssociationSpec` with ends `[e0, e1]` yields **two directed navigations**:
 
-- from `e0.target_class`, the property **`e1.property_name`** is navigable and yields `e1.target_class` with `e1.multiplicity`;
-- from `e1.target_class`, the property **`e0.property_name`** is navigable and yields `e0.target_class` with `e0.multiplicity`.
+- from `e0.target_class`, the property **`e1.property_name`** is navigable and yields `e1.target_class` with `e1.mult`;
+- from `e1.target_class`, the property **`e0.property_name`** is navigable and yields `e0.target_class` with `e0.mult`.
 
 Concretely, `fk_0 = { fk0DefaultCountries: Countries[1..*], fk0DefaultContinents: Continents[1] }` means: **from a `Countries`** you may navigate `.fk0DefaultContinents` → `Continents[1]`, and **from a `Continents`** you may navigate `.fk0DefaultCountries` → `Countries[1..*]`. This is exactly what the gold query `Countries.all()->filter(x|$x.continent == $x.fk0DefaultContinents.contId)` does. Getting the direction backwards is a soundness bug (it would mask `fk0DefaultContinents` on `Countries`). A decoder therefore precomputes, per class, its **navigable set** = { each opposite-end property }.
 
