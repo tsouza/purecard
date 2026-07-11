@@ -12,7 +12,7 @@ a stub "greeting" domain — plus a substantial, genuinely reusable engineering
 methodology (deterministic gates, spec-driven loop, a reviewer agent, an oracle
 mindset).
 
-The actual project, specified in full in [`../../DOMAIN.md`](../../DOMAIN.md), is
+The actual project, specified in full in [the spec](../spec/README.md), is
 **PureCard**: a grammar- and schema-constrained decoder for Legend Pure that masks
 a language model's logits so generated queries are valid by construction. It is a
 single library crate exposing a thin PyO3 boundary — the Rust half of a Rust/Python
@@ -54,8 +54,9 @@ and public-api → until a published baseline exists; fuzz/bench → their miles
 - **Easier:** the tree now matches the project; `just ci` gates exactly the code
   that ships; the crates.io publish lane is wired (`purecard`, `publish = true`,
   with `CARGO_REGISTRY_TOKEN`).
-- **Harder / follow-on obligations:** the decoder itself (M0–M5 in DOMAIN.md) is
-  still entirely ahead. The deferred lanes must be re-enabled at their milestones:
+- **Harder / follow-on obligations:** the decoder itself (M0–M5 in
+  [`../spec/overview.md`](../spec/overview.md) §10) is still entirely ahead. The
+  deferred lanes must be re-enabled at their milestones:
   set `SEMVER_ENABLED` after the first crates.io release, `PUBLIC_API_ENABLED`
   after committing a baseline, add the PyO3 `python` feature + a maturin/PyPI lane
   at M4, and restore fuzz/bench when there is code to exercise.

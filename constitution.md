@@ -28,7 +28,7 @@ Every rule is tagged. If a rule is untagged, treat it as PROTECTED.
   documented or they do not merge.
 - The decoder core is **pure**: no I/O, no network, no async, no framework
   dependency. It never calls the Legend engine — the host supplies `Vocab` and
-  `Schema` at the boundary (`DOMAIN.md` §6.2, §9.3). The one non-pure surface is
+  `Schema` at the boundary (`docs/spec/schema.md` §6.2, `docs/spec/architecture.md` §9.3). The one non-pure surface is
   the feature-gated PyO3 `ffi` module. This purity is the decoder's load-bearing
   structural invariant, standing in for the crate-layering a server would use.
 - No `unwrap`, `expect`, `panic!`, `todo!`, `unimplemented!`, or `dbg!` outside

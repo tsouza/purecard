@@ -1,7 +1,7 @@
 # PureCard test corpus
 
 Distilled from the **pure-lingua** project (the NL→Legend-Pure training effort) — the correctness
-oracle backbone for PureCard. See `DOMAIN.md` for how these are used (§ Test corpus).
+oracle backbone for PureCard. See [`../docs/spec/testing.md`](../docs/spec/testing.md) §13 for how these are used.
 
 ## Contents
 
@@ -15,7 +15,7 @@ oracle backbone for PureCard. See `DOMAIN.md` for how these are used (§ Test co
   coords) for 5 pilot + 3 out-of-sample dbs. **L2 (schema-consistency) test inputs.** Workspace ids
   inside are stale/ephemeral — only the class/property/association structure matters.
 - `legend-stack/` — the Legend engine docker-compose + configs (engine 4.113.0 + fs-SDLC 0.195.0,
-  anonymous auth) for the COMPLETENESS oracle (compiling generated queries). See DOMAIN.md § Legend setup.
+  anonymous auth) for the COMPLETENESS oracle (compiling generated queries). See [`../docs/spec/testing.md`](../docs/spec/testing.md) §14.
 
 ## Provenance
 

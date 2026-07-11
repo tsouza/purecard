@@ -11,8 +11,8 @@ readme = "README.md"
 keywords = ["constrained-decoding", "grammar", "llm", "legend", "pure"]
 categories = ["parser-implementations", "text-processing"]
 # Ship only the library in the published crate — not the 4.7 MB test corpus, the
-# docs tree, or the repo's CI/automation. DOMAIN.md rides along as the spec.
-include = ["src/**/*", "README.md", "LICENSE", "DOMAIN.md"]
+# docs tree (the spec lives under docs/spec/), or the repo's CI/automation.
+include = ["src/**/*", "README.md", "LICENSE"]
 
 [dependencies]
 
@@ -34,7 +34,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 # Shared by the `xtask` dev/CI orchestrator. The `purecard` crate itself is
-# dependency-free at M0; decoder deps land with the milestones (see DOMAIN.md).
+# dependency-free at M0; decoder deps land with the milestones (see docs/spec/).
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
