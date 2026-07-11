@@ -11,8 +11,9 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
-    # Wait before proposing a freshly-published release, so a yanked or
-    # compromised version is caught upstream before it reaches a PR here
+    # Observation window: hold a freshly-published version for a week before
+    # opening a version-update PR, so it has time to age (and be yanked upstream)
+    # before adoption. Not a guarantee, and not applied to security updates
     # (zizmor dependabot-cooldown; complements the SHA pinning).
     cooldown:
       default-days: 7
