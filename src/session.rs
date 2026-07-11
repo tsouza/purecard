@@ -19,6 +19,9 @@ use crate::grammar::compiled::CompiledGrammar;
 use crate::grammar::pda::{Frame, Pda};
 use crate::mask::BitMask;
 use crate::recognizer::ByteRecognizer;
+use crate::schema::Schema;
+use crate::schema::narrow::narrow_into;
+use crate::schema::scope::ScopeTracker;
 
 /// A byte-at-a-time decode session over the emitted-Pure grammar, bound to a
 /// [`CompiledGrammar`].
@@ -41,6 +44,20 @@ pub struct DecoderSession<'g> {
     /// A reused scratch stack for the per-step deferred-token re-probe, kept here
     /// so the hot path never allocates.
     scratch: Vec<Frame>,
+    /// A second reused buffer the L2 overlay refills in place with the
+    /// schema-legal set, then intersects into `mask` — so narrowing allocates no
+    /// per-step mask (§4.3). Sized, like `mask`, to
+    /// [`CompiledGrammar::mask_len`]. Left untouched on the L1-only (`schema` is
+    /// `None`) path.
+    narrow_buf: BitMask,
+    /// The optional L2 schema overlay. `None` is L1-only (M0–M2 behaviour): the
+    /// schema-narrowing block in [`allowed_mask`](DecoderSession::allowed_mask) is
+    /// skipped entirely, so there is zero added per-step cost.
+    schema: Option<Schema>,
+    /// The §6.4 scope machine, advanced in lockstep with
+    /// [`accept_token`](DecoderSession::accept_token). Inert (never consulted)
+    /// when `schema` is `None`.
+    tracker: ScopeTracker,
 }
 
 impl<'g> DecoderSession<'g> {
@@ -55,6 +72,29 @@ impl<'g> DecoderSession<'g> {
             grammar,
             mask: BitMask::with_len(grammar.mask_len()),
             scratch: Vec::new(),
+            narrow_buf: BitMask::with_len(grammar.mask_len()),
+            schema: None,
+            tracker: ScopeTracker::new(),
+        }
+    }
+
+    /// A fresh session that also enforces the L2 schema overlay against `schema`
+    /// (`docs/spec/schema.md` §6): at each identifier and operand position the
+    /// syntactic L1 mask is intersected with the schema-legal set, so phantom
+    /// classes/properties and type-mismatched operands are cleared. L2 only ever
+    /// *narrows* — the additive counterpart to [`new`](DecoderSession::new), which
+    /// stays L1-only and byte-compatible for M0–M2 callers.
+    #[must_use]
+    pub fn with_schema(grammar: &'g CompiledGrammar, schema: Schema) -> Self {
+        Self {
+            pda: Pda::new(),
+            offset: 0,
+            grammar,
+            mask: BitMask::with_len(grammar.mask_len()),
+            scratch: Vec::new(),
+            narrow_buf: BitMask::with_len(grammar.mask_len()),
+            schema: Some(schema),
+            tracker: ScopeTracker::new(),
         }
     }
 
@@ -99,10 +139,25 @@ impl<'g> DecoderSession<'g> {
         } else {
             self.mask.clear(eos);
         }
-        // M3 hook (§4.3, non-goal here): the schema overlay narrows the syntactic
-        // mask to schema-legal terminals at exactly this point —
-        //   if let Some(terminals) = &self.schema { self.mask.intersect(terminals) }
-        // one word-wise `intersect` against a precomputed set, no new per-step cost.
+        // L2 (§6): narrow the syntactic mask to the schema-legal set at exactly
+        // this point. A pure `intersect` can only clear bits, so `L2 ⊆ L1` is
+        // structural; the narrow set always keeps EOS so a complete query stays
+        // completable. The set is built into the reused `narrow_buf` (no per-step
+        // alloc); when `schema` is `None` the block is skipped entirely, so the
+        // L1-only path keeps its zero added per-step cost.
+        if let Some(schema) = &self.schema {
+            let pos = self.tracker.position(self.pda.state());
+            if narrow_into(
+                &mut self.narrow_buf,
+                schema,
+                &pos,
+                self.tracker.emitted_columns(),
+                self.grammar.vocab(),
+                self.grammar.eos_bit(),
+            ) {
+                self.mask.intersect(&self.narrow_buf);
+            }
+        }
         &self.mask
     }
 
@@ -139,6 +194,7 @@ impl<'g> DecoderSession<'g> {
         // touches `self.pda`, so no stack contents can be corrupted by a
         // Pop-then-fail. One small stack clone per call, off the per-candidate
         // mask hot path.
+        let pre_state = self.pda.state();
         let mut probe = self.pda.clone();
         for &byte in bytes {
             if probe.advance(byte).is_err() {
@@ -147,6 +203,11 @@ impl<'g> DecoderSession<'g> {
         }
         self.pda = probe;
         self.offset += bytes.len();
+        // Advance the L2 scope machine in lockstep, so the next `allowed_mask`
+        // narrows against the scope this token established. Skipped when L1-only.
+        if let Some(schema) = &self.schema {
+            self.tracker.observe(bytes, pre_state, schema);
+        }
         Ok(())
     }
 
@@ -175,6 +236,7 @@ impl<'g> DecoderSession<'g> {
     pub fn reset(&mut self) {
         self.pda.reset();
         self.offset = 0;
+        self.tracker = ScopeTracker::new();
     }
 }
 
@@ -201,6 +263,7 @@ impl ByteRecognizer for DecoderSession<'_> {
     fn reset(&mut self) {
         self.pda.reset();
         self.offset = 0;
+        self.tracker = ScopeTracker::new();
     }
 }
 

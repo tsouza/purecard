@@ -244,11 +244,16 @@ const NON_CORE_PACKAGE_PREFIXES: &[&str] = &["tests/", "corpus/"];
 /// The core's runtime-dependency allowlist: the *only* crates permitted in the
 /// published `purecard` crate's `[dependencies]` table. `thiserror` is the
 /// decoder's library error-type crate (constitution §1; `DecodeError` in
-/// `src/error.rs`, ADR-0004) — the core's first, anticipated runtime dep. Every
-/// other dependency must be a `[dev-dependency]`. This is a PROTECTED tightening
-/// of the former "table must be empty" rule, never a disable: a dep outside this
-/// set still fails the gate, and the set only ever shrinks toward stricter.
-const CORE_DEP_ALLOWLIST: &[&str] = &["thiserror"];
+/// `src/error.rs`, ADR-0004). `serde` + `serde_json` are the **M3 widening**
+/// (recorded in ADR-0005): L2 ingests the host `Schema` as JSON at session init
+/// (`Schema::from_json`, `docs/spec/schema.md` §6.3, §9), so its parser is shipped
+/// host-facing code — a bespoke JSON parser would fail "library before writing"
+/// (constitution §4).
+/// Every other dependency must be a `[dev-dependency]`. This list is a PROTECTED
+/// gate: it may only be widened by a human, with the justification recorded (as
+/// here); it never silently disables the check — a dep outside this set still
+/// fails the gate.
+const CORE_DEP_ALLOWLIST: &[&str] = &["thiserror", "serde", "serde_json"];
 
 /// Fix-the-system gate: assert the published `purecard` core stays dep-light and
 /// ships no oracle-harness code (ADR-0003).
@@ -777,28 +782,50 @@ ureq = \"3\"
     #[test]
     fn a_package_alias_is_resolved_to_the_real_crate() {
         // The gate must check a dependency's REAL package, not the key it hides
-        // behind: `thiserror = { package = "serde" }` is `serde`, and pointing a
-        // `thiserror` key at `serde` must NOT sneak past the `thiserror`-only
-        // allowlist. Both TOML spellings of the rename are covered.
+        // behind: `thiserror = { package = "tokio" }` is `tokio` (not on the
+        // allowlist), and pointing an allowlisted `thiserror` key at `tokio` must
+        // NOT sneak it past. Both TOML spellings of the rename are covered.
         let inline = "\
 [dependencies]
-thiserror = { package = \"serde\", version = \"1\" }
+thiserror = { package = \"tokio\", version = \"1\" }
 ";
-        assert_eq!(core_dependency_entries(inline), ["serde"]);
+        assert_eq!(core_dependency_entries(inline), ["tokio"]);
         assert_eq!(
             disallowed_core_deps(&core_dependency_entries(inline), CORE_DEP_ALLOWLIST),
-            ["serde"]
+            ["tokio"]
         );
 
         let subtable = "\
 [dependencies.thiserror]
-package = \"serde\"
+package = \"tokio\"
 version = \"1\"
 ";
-        assert_eq!(core_dependency_entries(subtable), ["serde"]);
+        assert_eq!(core_dependency_entries(subtable), ["tokio"]);
         assert_eq!(
             disallowed_core_deps(&core_dependency_entries(subtable), CORE_DEP_ALLOWLIST),
-            ["serde"]
+            ["tokio"]
+        );
+    }
+
+    #[test]
+    fn the_m3_serde_widening_is_allowlisted() {
+        // serde + serde_json are the M3 addition to the core allowlist (L2 JSON
+        // ingress); together with thiserror they must all pass the gate, while an
+        // unrelated runtime dep still fails it.
+        let src = "\
+[dependencies]
+thiserror = \"2\"
+serde = { version = \"1\", features = [\"derive\"] }
+serde_json = \"1\"
+tokio = \"1\"
+";
+        assert_eq!(
+            core_dependency_entries(src),
+            ["thiserror", "serde", "serde_json", "tokio"]
+        );
+        assert_eq!(
+            disallowed_core_deps(&core_dependency_entries(src), CORE_DEP_ALLOWLIST),
+            ["tokio"]
         );
     }
 
@@ -810,24 +837,24 @@ version = \"1\"
         // (constitution §7, anti-gaming). Both key forms are covered.
         let inline = "\
 [dependencies]
-serde = { version = \"1\" } # package = \"thiserror\"
+tokio = { version = \"1\" } # package = \"thiserror\"
 ";
-        assert_eq!(core_dependency_entries(inline), ["serde"]);
+        assert_eq!(core_dependency_entries(inline), ["tokio"]);
         assert_eq!(
             disallowed_core_deps(&core_dependency_entries(inline), CORE_DEP_ALLOWLIST),
-            ["serde"]
+            ["tokio"]
         );
 
         // A comment-only line inside a sub-table body must not be read as a rename.
         let subtable = "\
-[dependencies.serde]
+[dependencies.tokio]
 version = \"1\"
 # package = \"thiserror\"
 ";
-        assert_eq!(core_dependency_entries(subtable), ["serde"]);
+        assert_eq!(core_dependency_entries(subtable), ["tokio"]);
         assert_eq!(
             disallowed_core_deps(&core_dependency_entries(subtable), CORE_DEP_ALLOWLIST),
-            ["serde"]
+            ["tokio"]
         );
 
         // A `#` *inside* the quoted package value is not a comment delimiter.
@@ -851,13 +878,19 @@ version = \"1\"
 
     #[test]
     fn disallowed_core_deps_admits_the_allowlist_and_flags_the_rest() {
-        // `thiserror` is on the allowlist; `serde` is not, so only `serde` is
-        // reported. This pins the M1 tightening: the gate permits the intended
-        // core dep set exactly, not "any dep" and not "no dep".
-        let entries = ["thiserror".to_string(), "serde".to_string()];
+        // The M3 allowlist is `{ thiserror, serde, serde_json }`; an unrelated
+        // runtime dep (`tokio`) is not on it, so only `tokio` is reported. This
+        // pins the gate to permit the intended core dep set exactly, not "any
+        // dep" and not "no dep".
+        let entries = [
+            "thiserror".to_string(),
+            "serde".to_string(),
+            "serde_json".to_string(),
+            "tokio".to_string(),
+        ];
         assert_eq!(
             disallowed_core_deps(&entries, CORE_DEP_ALLOWLIST),
-            ["serde"]
+            ["tokio"]
         );
     }
 
