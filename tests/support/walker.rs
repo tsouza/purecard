@@ -156,23 +156,21 @@ fn weighted_pick(cands: &[(u8, u32)], rng: &mut SplitMix64) -> u8 {
     cands[cands.len() - 1].0
 }
 
-/// Attempt one accepting walk from `seed`. Returns the byte string and the number
-/// of PRNG draws it consumed (so the next walk can start past this stream), or
-/// `None` if the attempt did not reach an accepting state within [`HARD_CAP`].
+/// Attempt one accepting walk from `seed`. Returns the byte string and the PRNG's
+/// final state (so the next walk resumes the same SplitMix64 stream), or `None` if
+/// the attempt did not reach an accepting state within [`HARD_CAP`]. The grow-target
+/// draw always advances the state at least once, so the returned state never equals
+/// `seed`.
 fn attempt(seed: u64) -> (Option<Vec<u8>>, u64) {
     let mut rng = SplitMix64::new(seed);
-    let mut draws = 0u64;
-    let grow_target = {
-        draws += 1;
-        GROW_MIN + rng.below(GROW_MAX - GROW_MIN)
-    };
+    let grow_target = GROW_MIN + rng.below(GROW_MAX - GROW_MIN);
     let mut pda = Pda::new();
     let mut out: Vec<u8> = Vec::new();
 
     for _ in 0..HARD_CAP {
         let growing = (out.len() as u64) < grow_target;
         if !growing && pda.is_accepting() && out.len() >= MIN_LEN {
-            return (Some(out), draws);
+            return (Some(out), rng.state);
         }
         let mut cands: Vec<(u8, u32)> = Vec::new();
         for &byte in ALPHABET {
@@ -186,31 +184,30 @@ fn attempt(seed: u64) -> (Option<Vec<u8>>, u64) {
         }
         if cands.is_empty() {
             return if pda.is_accepting() && out.len() >= MIN_LEN {
-                (Some(out), draws)
+                (Some(out), rng.state)
             } else {
-                (None, draws)
+                (None, rng.state)
             };
         }
-        draws += 1;
         let byte = weighted_pick(&cands, &mut rng);
         // The byte was chosen from probed-live candidates, so `advance` is expected
         // to succeed; the `Err` arm is a defensive guard that abandons the attempt
         // rather than trusting the invariant blindly.
         if pda.advance(byte).is_err() {
-            return (None, draws);
+            return (None, rng.state);
         }
         out.push(byte);
     }
     if pda.is_accepting() && out.len() >= MIN_LEN {
-        (Some(out), draws)
+        (Some(out), rng.state)
     } else {
-        (None, draws)
+        (None, rng.state)
     }
 }
 
-/// Generate exactly [`WALK_COUNT`] deterministic accepting walks. Seeds advance past
-/// every draw a prior walk consumed (and past a failed attempt), so the whole set is
-/// one reproducible SplitMix64 stream.
+/// Generate exactly [`WALK_COUNT`] deterministic accepting walks. Each attempt
+/// resumes the previous one's final PRNG state, so successful and failed attempts
+/// alike form one reproducible SplitMix64 stream.
 ///
 /// The count is a guarantee, not a target: the loop runs until `WALK_COUNT` walks
 /// are collected, bounded by [`ATTEMPT_LIMIT`] purely so a bug can never spin
@@ -223,8 +220,8 @@ pub fn generate_walks() -> Vec<Vec<u8>> {
     let mut attempts = 0usize;
     while walks.len() < WALK_COUNT && attempts < ATTEMPT_LIMIT {
         attempts += 1;
-        let (walk, draws) = attempt(seed);
-        seed = seed.wrapping_add(draws.max(1)).wrapping_add(SPLITMIX_GAMMA);
+        let (walk, next_state) = attempt(seed);
+        seed = next_state;
         if let Some(bytes) = walk {
             walks.push(bytes);
         }

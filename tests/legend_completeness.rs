@@ -90,9 +90,6 @@ fn seeded_walks_round_trip_to_the_engine_and_are_classified() {
         .health_wait(HEALTH_TIMEOUT)
         .expect("Legend engine healthy");
     let model = fixture("model.json");
-    // Load and parse the placeholder lambda envelope once, then clone it per walk —
-    // the fixture is identical every iteration, so re-reading it from disk 64 times
-    // is wasted I/O.
     let lambda_template = fixture("lambda.json");
 
     for walk in &walks {

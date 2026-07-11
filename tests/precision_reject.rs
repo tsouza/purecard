@@ -143,7 +143,6 @@ fn a_bare_source_classpath_without_a_production_dies() {
     // A `-` in source position must open `->`, never arithmetic minus.
     assert!(dies("|X-5.all()->take(1)"));
     assert!(dies("|spider::geo::Db- "));
-    // …but the two real source shapes still stream.
     assert!(!dies("|X.all()->take(1)"));
     assert!(!dies(
         "|spider::geo::Db->tableReference('default','T')->tableToTDS()->limit(1)"
