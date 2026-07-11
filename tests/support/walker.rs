@@ -26,6 +26,11 @@ const ALPHABET: &[u8] = b"abXY1_ |{}()[].,;:$%'-><=!&+*/";
 /// Number of accepting walks a full generation produces.
 pub const WALK_COUNT: usize = 64;
 
+/// Upper bound on generation attempts — a safety valve so a bug can never spin
+/// forever. Comfortably above `WALK_COUNT`, since the biased close-out lands an
+/// accepting walk on nearly every seed.
+const ATTEMPT_LIMIT: usize = WALK_COUNT * 64;
+
 /// The base seed; walk `i` derives from `BASE_SEED` advanced past every seed a
 /// prior walk consumed, so the set is one deterministic stream, not 64 correlated
 /// low seeds.
@@ -49,6 +54,20 @@ const HARD_CAP: usize = 400;
 /// Weight added, in the closing phase, to a byte whose result is an accepting
 /// configuration — biases each closing step toward finishing the walk.
 const ACCEPT_BONUS: u32 = 10;
+
+/// Sampling weights in the *growing* phase: structure (openers) is modestly
+/// favoured over ever-longer identifiers (wordish bytes), with all other bytes
+/// weighted the same as an opener.
+const OPENER_WEIGHT_GROWING: u32 = 3;
+const WORDISH_WEIGHT_GROWING: u32 = 4;
+const DEFAULT_WEIGHT_GROWING: u32 = 3;
+
+/// Sampling weights in the *closing* phase: openers are forbidden (they never
+/// shrink the stack), closers are strongly favoured so the walk terminates, and
+/// everything else keeps a small residual weight.
+const OPENER_WEIGHT_CLOSING: u32 = 0;
+const CLOSER_WEIGHT_CLOSING: u32 = 12;
+const DEFAULT_WEIGHT_CLOSING: u32 = 2;
 
 /// SplitMix64 — a tiny, well-known, fully specified PRNG. Committed here rather
 /// than pulling a `rand` dependency for a deterministic test generator: the whole
@@ -100,24 +119,19 @@ const fn is_wordish(byte: u8) -> bool {
 /// growing and whether taking the byte lands in an accepting state.
 fn weight(byte: u8, growing: bool, leads_accept: bool) -> u32 {
     let base = if growing {
-        // Growth: modestly favour structure over ever-longer identifiers.
         if is_opener(byte) {
-            3
+            OPENER_WEIGHT_GROWING
         } else if is_wordish(byte) {
-            4
+            WORDISH_WEIGHT_GROWING
         } else {
-            3
+            DEFAULT_WEIGHT_GROWING
         }
+    } else if is_opener(byte) {
+        OPENER_WEIGHT_CLOSING
+    } else if is_closer(byte) {
+        CLOSER_WEIGHT_CLOSING
     } else {
-        // Closing: openers are forbidden (they never shrink the stack); closers
-        // and token-enders are favoured so the walk terminates.
-        if is_opener(byte) {
-            0
-        } else if is_closer(byte) {
-            12
-        } else {
-            2
-        }
+        DEFAULT_WEIGHT_CLOSING
     };
     if !growing && leads_accept {
         base + ACCEPT_BONUS
@@ -179,7 +193,9 @@ fn attempt(seed: u64) -> (Option<Vec<u8>>, u64) {
         }
         draws += 1;
         let byte = weighted_pick(&cands, &mut rng);
-        // The byte was chosen from probed-live candidates, so advance cannot fail.
+        // The byte was chosen from probed-live candidates, so `advance` is expected
+        // to succeed; the `Err` arm is a defensive guard that abandons the attempt
+        // rather than trusting the invariant blindly.
         if pda.advance(byte).is_err() {
             return (None, draws);
         }
@@ -192,25 +208,31 @@ fn attempt(seed: u64) -> (Option<Vec<u8>>, u64) {
     }
 }
 
-/// Generate [`WALK_COUNT`] deterministic accepting walks. Seeds advance past every
-/// draw a prior walk consumed (and past a failed attempt), so the whole set is one
-/// reproducible SplitMix64 stream.
+/// Generate exactly [`WALK_COUNT`] deterministic accepting walks. Seeds advance past
+/// every draw a prior walk consumed (and past a failed attempt), so the whole set is
+/// one reproducible SplitMix64 stream.
+///
+/// The count is a guarantee, not a target: the loop runs until `WALK_COUNT` walks
+/// are collected, bounded by [`ATTEMPT_LIMIT`] purely so a bug can never spin
+/// forever, and a final assertion turns any shortfall into a failure at this source
+/// rather than a confusing mismatch downstream.
 #[must_use]
 pub fn generate_walks() -> Vec<Vec<u8>> {
     let mut walks = Vec::with_capacity(WALK_COUNT);
     let mut seed = BASE_SEED;
-    // Bound total attempts so a bug can never loop forever; in practice the
-    // biased close-out lands an accepting walk on nearly every seed.
-    let max_attempts = WALK_COUNT * 64;
-    for _ in 0..max_attempts {
-        if walks.len() == WALK_COUNT {
-            break;
-        }
+    let mut attempts = 0usize;
+    while walks.len() < WALK_COUNT && attempts < ATTEMPT_LIMIT {
+        attempts += 1;
         let (walk, draws) = attempt(seed);
         seed = seed.wrapping_add(draws.max(1)).wrapping_add(SPLITMIX_GAMMA);
         if let Some(bytes) = walk {
             walks.push(bytes);
         }
     }
+    assert_eq!(
+        walks.len(),
+        WALK_COUNT,
+        "generate_walks fell short of WALK_COUNT within ATTEMPT_LIMIT attempts"
+    );
     walks
 }

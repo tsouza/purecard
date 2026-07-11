@@ -329,8 +329,15 @@ fn core_dependency_entries(toml_src: &str) -> Vec<String> {
     // body can rewrite it to the real crate name the allowlist must be checked
     // against.
     let mut subtable_entry: Option<usize> = None;
-    for line in toml_src.lines() {
-        let trimmed = line.trim();
+    for raw_line in toml_src.lines() {
+        // Strip any trailing comment *before* parsing: a `#` outside a quoted string
+        // begins a TOML comment, which Cargo ignores. Parsing it as live TOML lets a
+        // comment (`serde = { … } # package = "thiserror"`) spoof a `package =`
+        // rename and slip a disallowed crate past the allowlist (constitution §7).
+        let trimmed = strip_toml_comment(raw_line).trim();
+        if trimmed.is_empty() {
+            continue;
+        }
         if trimmed.starts_with('[') {
             subtable_entry = None;
             // A `[dependencies.<name>]` header is itself a dependency
@@ -351,7 +358,7 @@ fn core_dependency_entries(toml_src: &str) -> Vec<String> {
             }
             continue;
         }
-        if !in_deps || trimmed.is_empty() || trimmed.starts_with('#') {
+        if !in_deps {
             continue;
         }
         if let Some(name) = trimmed.split(['=', '.']).next() {
@@ -398,6 +405,24 @@ fn package_override(line: &str) -> Option<String> {
         from = end;
     }
     None
+}
+
+/// The portion of a TOML line before its comment: everything up to the first `#`
+/// that is not inside a quoted string. A crate name can hold neither `#` nor a
+/// quote, so a simple quote-tracking scan (no escape handling) is exact here, and
+/// keeps a trailing comment from being parsed as a live `package =` rename.
+fn strip_toml_comment(line: &str) -> &str {
+    let mut quote: Option<u8> = None;
+    for (idx, &byte) in line.as_bytes().iter().enumerate() {
+        match quote {
+            Some(open) if byte == open => quote = None,
+            Some(_) => {}
+            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+            None if byte == b'#' => return &line[..idx],
+            None => {}
+        }
+    }
+    line
 }
 
 /// Whether `byte` may appear in a bare TOML key, so `package` inside a longer key
@@ -774,6 +799,41 @@ version = \"1\"
         assert_eq!(
             disallowed_core_deps(&core_dependency_entries(subtable), CORE_DEP_ALLOWLIST),
             ["serde"]
+        );
+    }
+
+    #[test]
+    fn a_commented_out_package_rename_cannot_spoof_the_allowlist() {
+        // A trailing comment is not live TOML: `serde = { … } # package = "thiserror"`
+        // must resolve to the real crate `serde` (disallowed), never to the
+        // commented-out `thiserror` alias — otherwise a comment bypasses the gate
+        // (constitution §7, anti-gaming). Both key forms are covered.
+        let inline = "\
+[dependencies]
+serde = { version = \"1\" } # package = \"thiserror\"
+";
+        assert_eq!(core_dependency_entries(inline), ["serde"]);
+        assert_eq!(
+            disallowed_core_deps(&core_dependency_entries(inline), CORE_DEP_ALLOWLIST),
+            ["serde"]
+        );
+
+        // A comment-only line inside a sub-table body must not be read as a rename.
+        let subtable = "\
+[dependencies.serde]
+version = \"1\"
+# package = \"thiserror\"
+";
+        assert_eq!(core_dependency_entries(subtable), ["serde"]);
+        assert_eq!(
+            disallowed_core_deps(&core_dependency_entries(subtable), CORE_DEP_ALLOWLIST),
+            ["serde"]
+        );
+
+        // A `#` *inside* the quoted package value is not a comment delimiter.
+        assert_eq!(
+            package_override("package = \"ser#de\"").as_deref(),
+            Some("ser#de")
         );
     }
 

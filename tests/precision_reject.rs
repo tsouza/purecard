@@ -129,6 +129,104 @@ fn colon_runs_beyond_a_double_colon_die() {
     assert!(dies("|meta:: pure::Thing.all()->take(1)"));
 }
 
+/// A pipeline source is a classpath that must be *produced* — followed by `.all()`,
+/// an arm-A `->tableReference(…)` envelope, or a `::` classpath continuation. A bare
+/// classpath (`|X `) or one abutting a value-completing delimiter never accepts
+/// (finding: source must be followed by `.all()`/`->`).
+#[test]
+fn a_bare_source_classpath_without_a_production_dies() {
+    assert!(dies("|X "));
+    assert!(dies("|X"));
+    assert!(dies("|spider::geo::Db "));
+    assert!(dies("|spider::geo::Db"));
+    assert!(dies("|X)"));
+    // A `-` in source position must open `->`, never arithmetic minus.
+    assert!(dies("|X-5.all()->take(1)"));
+    assert!(dies("|spider::geo::Db- "));
+    // …but the two real source shapes still stream.
+    assert!(!dies("|X.all()->take(1)"));
+    assert!(!dies(
+        "|spider::geo::Db->tableReference('default','T')->tableToTDS()->limit(1)"
+    ));
+}
+
+/// A `*` is only ever a `[*]` multiplicity token; it is never an arithmetic or
+/// argument value (finding: keep `*` in multiplicity context).
+#[test]
+fn a_star_outside_a_multiplicity_bracket_dies() {
+    assert!(dies("|X.all()->take(*)"));
+    assert!(dies("|X.all()->take(1 + *)"));
+    assert!(dies("|X.all()->filter(x|$x.a > *)"));
+    assert!(dies("|X.all()->project([$x.a * *], ['c'])"));
+    // …but the typed-binder `[*]` multiplicity still streams.
+    assert!(!dies(
+        "|db::Db->tableReference('default','T')->tableToTDS()\
+         ->groupBy([], agg('C', row: meta::pure::tds::TDSRow[1]|$row, \
+         y: meta::pure::tds::TDSRow[*]|$y->count()))"
+    ));
+}
+
+/// A `join` brace lambda must begin with a typed binder identifier; a literal body
+/// (`{1}`) is not a lambda (finding: require brace-lambda structure).
+#[test]
+fn a_brace_lambda_with_a_literal_body_dies() {
+    let join = "|a::Db->tableReference('default','A')->tableToTDS()->join(\
+                a::Db->tableReference('default','B')->tableToTDS(), \
+                meta::relational::metamodel::join::JoinType.INNER, ";
+    assert!(dies(&format!("{join}{{1}})")));
+    assert!(dies(&format!("{join}{{'x'}})")));
+    assert!(dies(&format!("{join}{{%2018}})")));
+    // …but a real typed-binder brace lambda still streams.
+    assert!(!dies(&format!(
+        "{join}{{r1: meta::pure::tds::TDSRow[1], r2: meta::pure::tds::TDSRow[1]|\
+         $r1.getInteger('x') == $r2.getInteger('y')}})"
+    )));
+}
+
+/// A block-query binding is `let name = pipeline`; the `let` keyword is mandatory,
+/// and no bare identifier may abut a completed statement (finding: track the
+/// block-binding phase, do not accept any adjacent identifier under a brace).
+#[test]
+fn a_block_binding_without_let_or_with_trailing_junk_dies() {
+    // Two bare identifiers then `=` — a binding missing its `let` keyword.
+    assert!(dies("{|foo bar = X.all()->take(1);}"));
+    // A completed pipeline followed by a stray identifier before the close.
+    assert!(dies("{|X.all()->take(1) junk}"));
+    assert!(dies("{|let m = X.all()->take(1); $m->take(1) junk;}"));
+    // A single `=` inside a brace lambda body is a comparison typo, not a `let`.
+    assert!(dies(
+        "|a::Db->tableReference('default','A')->tableToTDS()->join(\
+         a::Db->tableReference('default','B')->tableToTDS(), \
+         meta::relational::metamodel::join::JoinType.INNER, \
+         {r1: meta::pure::tds::TDSRow[1], r2: meta::pure::tds::TDSRow[1]|\
+         $r1.getInteger('x') = $r2.getInteger('y')})"
+    ));
+    // …but real single- and multi-`let` blocks still stream.
+    assert!(!dies("{|let m = X.all()->take(1); $m->take(1);}"));
+    assert!(!dies(
+        "{|let a = X.all()->take(1); let b = Y.all()->take(1); $a->take(1);}"
+    ));
+}
+
+/// A `::` classpath separator must be contiguous; whitespace between the two colons
+/// (`meta: :pure`) is a dead state, in both source and typed-binder position
+/// (finding: reject whitespace inside `::`).
+#[test]
+fn whitespace_inside_a_double_colon_dies() {
+    // Source-position classpath.
+    assert!(dies("|meta: :pure::Thing.all()->take(1)"));
+    // Typed-binder-position classpath (inside a filter lambda header).
+    assert!(dies(
+        "|db::Db->tableReference('default','T')->tableToTDS()\
+         ->filter(row: meta: :pure::tds::TDSRow[1]|$row.getInteger('c') == 1)"
+    ));
+    // …but a typed-binder `:` with trailing whitespace before the type still streams.
+    assert!(!dies(
+        "|db::Db->tableReference('default','T')->tableToTDS()\
+         ->filter(row: meta::pure::tds::TDSRow[1]|$row.getInteger('c') == 1)"
+    ));
+}
+
 /// Structural closers still honour the frame stack and the source rule together —
 /// a spot check that the tightenings did not reopen the delimiter invariants.
 #[test]
