@@ -87,7 +87,7 @@ jobs:
       # `cargo xtask ci`'s `clippy --all-features` now compiles the `python`
       # feature (the M4 PyO3 boundary), so pyo3's build script needs a Python
       # interpreter on PATH. abi3-py39 makes the exact version irrelevant.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: taiki-e/install-action@v2
@@ -261,7 +261,7 @@ jobs:
       # `just docs` runs `cargo doc --all-features`, which documents the `python`
       # feature (the M4 PyO3 boundary) and so builds pyo3 — its build script needs
       # a Python interpreter on PATH.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: taiki-e/install-action@v2
