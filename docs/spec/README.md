@@ -10,18 +10,20 @@ constrained-decoding library).**
   `purecard`).
 - **Status:** Design, ready for implementation.
 
-Together the files below are the _complete_ build spec: a fresh engineer (or a
-fresh Claude instance) can build PureCard end-to-end from them alone — no other
-design docs. The only external things the reader must fetch are (a) the _test
-corpus_ of gold Pure queries and (b) a running _Legend engine_ — both are
-data/services, not prose, with locations given in [`testing.md`](testing.md) §8.
-General Rust workspace conventions, CI, and agentic dev setup are out of scope.
+Together the files below are the _complete specification of the decoder_: a
+fresh engineer (or a fresh Claude instance) can build the PureCard crate from
+them alone — no other design docs. Its external inputs at build/test time are
+(a) the _test corpus_ of gold Pure queries and (b) a running _Legend engine_,
+both located in [`testing.md`](testing.md) §8. The host-side Python
+model/tokenizer/inference stack that drives it (the M4 integration surface) is
+out of scope here — see §2 and §9 — as are general Rust workspace conventions,
+CI, and agentic dev setup.
 
 Context in one line: an upstream project ("pure-lingua") trains an LLM to emit
-Legend Pure queries; at single-shot serving we want _guaranteed-valid_ output in
-one forward pass (no compile-repair round-trip). PureCard provides that guarantee
-via constrained decoding. This spec is the authoritative source that
-[`../domain-model.md`](../domain-model.md) navigates and elaborates.
+Legend Pure queries; at serving time we want _guaranteed-valid_ output without a
+compile-repair round-trip. PureCard provides that guarantee as a per-step logits
+transform during autoregressive decoding. This spec is the authoritative source
+that [`../domain-model.md`](../domain-model.md) navigates and elaborates.
 
 Section numbers (`§N`) are preserved verbatim as headings, so any `§N` reference
 resolves to the file below.
