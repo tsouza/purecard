@@ -7,12 +7,15 @@
 //! belongs to, and the [`DeadState`] carrier the [`Pda`](pda::Pda) hands back on
 //! rejection.
 //!
-//! There is no compiled-EBNF `spec.rs` and no `CompiledGrammar` here: M1 ships the
-//! recogniser only, so a [`DecoderSession`](crate::DecoderSession) owns a
-//! [`Pda`](pda::Pda) directly. The vocabulary/mask compilation the architecture
-//! sketches (`docs/spec/architecture.md` §4) lands in M2.
+//! There is no compiled-EBNF `spec.rs` yet: M2 ships the recogniser plus the
+//! [`CompiledGrammar`] vocabulary/mask cache (`docs/spec/architecture.md` §4),
+//! but real EBNF spec compilation (§5) is a later milestone, so
+//! [`CompiledGrammar::from_spec`] is a stub over the single fixed M1 PDA.
 
+pub mod compiled;
 pub mod pda;
+
+pub use compiled::CompiledGrammar;
 
 /// The automaton configuration at the point a byte was rejected: the names of the
 /// current [`State`](pda::State) and the top [`Frame`](pda::Frame).

@@ -7,10 +7,14 @@
 //! that generation is deterministic and non-trivial. It is the hermetic floor
 //! under the opt-in `legend` engine lane, which POSTs the same walks to a live
 //! Legend stack (see `tests/legend_completeness.rs`).
+#![forbid(unsafe_code)]
 
+#[path = "support/l1.rs"]
+mod l1;
 #[path = "support/walker.rs"]
 mod walker;
 
+use l1::l1_grammar;
 use purecard::{ByteRecognizer, DecoderSession};
 use walker::{WALK_COUNT, generate_walks};
 
@@ -27,7 +31,8 @@ fn every_generated_walk_is_accepted_by_the_shipped_recognizer() {
     );
     for walk in &walks {
         let rendered = String::from_utf8_lossy(walk);
-        let mut session = DecoderSession::new();
+        let grammar = l1_grammar();
+        let mut session = DecoderSession::new(&grammar);
         for (offset, &byte) in walk.iter().enumerate() {
             session.accept_byte(byte).unwrap_or_else(|err| {
                 panic!("generated walk rejected at byte {offset}: {rendered:?} — {err}")

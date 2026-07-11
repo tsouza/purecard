@@ -14,14 +14,20 @@
 //! byte **or** ends the stream in a non-accepting (incomplete) state. Both are
 //! genuine refusals — a decoder that never dead-ends but never completes has still
 //! declined the string.
+#![forbid(unsafe_code)]
 
+#[path = "support/l1.rs"]
+mod l1;
+
+use l1::l1_grammar;
 use purecard::{ByteRecognizer, DecodeError, DecoderSession};
 
 /// Drive `text` through a fresh real [`DecoderSession`] and report whether the
 /// recogniser refuses it — a mid-stream dead state, or an incomplete stream at
 /// end-of-input. The mirror image of `soundness_replay::replay`.
 fn dies(text: &str) -> bool {
-    let mut session = DecoderSession::new();
+    let grammar = l1_grammar();
+    let mut session = DecoderSession::new(&grammar);
     for &byte in text.as_bytes() {
         if let Err(DecodeError::DeadState { .. }) = session.accept_byte(byte) {
             return true;

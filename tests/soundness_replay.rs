@@ -12,6 +12,7 @@
 //! The corpus is partitioned by [`Envelope`], and each partition's record count is
 //! asserted against an exact named constant so shrinkage, corruption, or a
 //! mis-partitioned query all redden the gate.
+#![forbid(unsafe_code)]
 
 use std::path::PathBuf;
 
@@ -23,8 +24,11 @@ use std::path::PathBuf;
 mod corpus;
 #[path = "support/error.rs"]
 mod error;
+#[path = "support/l1.rs"]
+mod l1;
 
 use corpus::load_gold;
+use l1::l1_grammar;
 use purecard::{ByteRecognizer, DecodeError, DecoderSession, Envelope};
 
 /// Arm-A (relational envelope) record count. An exact named constant, not a
@@ -45,7 +49,8 @@ fn corpus_path() -> PathBuf {
 /// end-of-stream; `Err` with the full oracle-tightening tuple otherwise, so a
 /// soundness failure names the exact byte/state/stack that rejected it.
 fn replay(bytes: &[u8]) -> Result<(), String> {
-    let mut session = DecoderSession::new();
+    let grammar = l1_grammar();
+    let mut session = DecoderSession::new(&grammar);
     for &byte in bytes {
         if let Err(DecodeError::DeadState {
             offset,
@@ -117,7 +122,8 @@ fn the_deadness_channel_fires_on_malformed_input_with_a_correct_offset() {
     // Pure — an extra ')' with no matching opener — to prove the single deadness
     // channel fires at the offending offset on the real automaton (not a stub).
     let malformed = "|X.all())";
-    let mut session = DecoderSession::new();
+    let grammar = l1_grammar();
+    let mut session = DecoderSession::new(&grammar);
     let mut error = None;
     for &byte in malformed.as_bytes() {
         if let Err(err) = session.accept_byte(byte) {
