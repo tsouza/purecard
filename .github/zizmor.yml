@@ -1,0 +1,26 @@
+# zizmor configuration — https://docs.zizmor.sh/configuration/
+#
+# The zizmor CI gate (lint.yml) runs with its default strict posture: any
+# finding fails the build, which is what enforces SHA-pinned `uses:` going
+# forward (the `unpinned-uses` audit). The two ignores below are the only
+# accepted exceptions — each is a pre-existing, low-confidence finding whose
+# "fix" would change workflow behavior the SHA-pinning change must not touch
+# (issue #15: "No regressions in existing workflow behavior"). They are scoped
+# to the exact file so a NEW occurrence elsewhere still reddens the gate.
+
+rules:
+  # release-plz must push its release branch + tags, so its checkout keeps the
+  # GITHUB_TOKEN credential (via `token:`); `persist-credentials: false` would
+  # break the push. Deliberate, not a leak vector — the job runs only on push
+  # to main and uploads no artifacts.
+  artipacked:
+    ignore:
+      - release-plz.yml
+
+  # The wheels build enables sccache for speed; zizmor flags the `release:`
+  # trigger + caching as a theoretical runtime-artifact cache-poisoning vector
+  # (Low confidence). The wheel is rebuilt on release from source and the
+  # separate publish job consumes a fresh upload-artifact, not the cache.
+  cache-poisoning:
+    ignore:
+      - wheels.yml

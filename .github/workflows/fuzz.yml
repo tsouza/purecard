@@ -38,10 +38,10 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with: { persist-credentials: false, fetch-depth: 0 }
       # A scheduled run has no PR base to diff against, so force the fuzz job on.
-      - uses: dorny/paths-filter@v4
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
         id: filter
         if: github.event_name != 'schedule'
         with:
@@ -66,19 +66,19 @@ jobs:
       matrix:
         target: [accept_token, allowed_mask, schema_from_json]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
       # Nightly is the one channel rust-toolchain.toml (stable) does not provide,
       # scoped to this job only (constitution §1-sanctioned).
-      - uses: dtolnay/rust-toolchain@nightly
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@efcb852328a9f50117170cc43094fb6f09eaf1ae # nightly
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: fuzz
       # First-party installer; it caches the binary on the pinned version key, so
       # cargo-fuzz is never re-downloaded uncached (constitution §2). Pinned to a
       # verified-latest version rather than floating.
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2
         with:
           tool: cargo-fuzz@0.13.2
       # Restore the per-target corpus from the most recent prior run (prefix
@@ -86,7 +86,7 @@ jobs:
       # external fetch. Saving is a separate post-run step: `actions/cache` only
       # writes on a key miss, so a combined step keyed on the source hash would
       # drop the inputs a run newly discovers whenever the sources are unchanged.
-      - uses: actions/cache/restore@v6
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
@@ -107,13 +107,13 @@ jobs:
       # prefix-matched restore picks this up.
       - name: Save fuzz corpus
         if: always()
-        uses: actions/cache/save@v6
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
