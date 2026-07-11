@@ -9,17 +9,18 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
-# Unsafe-policy exception (constitution §1, ADR-0006), stated explicitly rather
-# than left as a silent absence of `#![forbid(unsafe_code)]`. Every shipped crate
-# carries that forbid; this crate cannot, because `libfuzzer-sys`'s `fuzz_target!`
-# macro expands to `unsafe` glue around the libFuzzer entry point. The exception is
-# deliberately narrow and machine-checkable: the crate is excluded from the root
-# workspace (see ../Cargo.toml [workspace].exclude), is `publish = false`, is built
-# only out-of-band via `cargo +nightly fuzz`, and is never linked into the published
-# `purecard` crate — which keeps `#![forbid(unsafe_code)]` intact. This `allow` is
-# scoped to the fuzz crate alone; it does not relax the standard anywhere else.
+# Unsafe-policy exception (constitution §1, ADR-0006), stated explicitly and as
+# narrowly as the tooling allows. Every shipped crate carries `#![forbid(unsafe_code)]`;
+# this crate cannot, because `libfuzzer-sys`'s `fuzz_target!` macro expands to `unsafe`
+# glue around the libFuzzer entry point. Rather than a blanket `allow`, the policy is
+# `deny`: the macro-generated `unsafe` is permitted (it carries its own allow), but any
+# *handwritten* `unsafe` in a fuzz target is a compile error (verified). So the
+# exception admits only the required harness glue, not arbitrary unsafe. The crate is
+# also excluded from the root workspace (../Cargo.toml [workspace].exclude), is
+# `publish = false`, built only out-of-band via `cargo +nightly fuzz`, and never linked
+# into the published `purecard` crate — which keeps its forbid intact.
 [lints.rust]
-unsafe_code = "allow"
+unsafe_code = "deny"
 
 # Excluded from the root workspace (see ../Cargo.toml [workspace].exclude): the
 # libfuzzer harness generates `unsafe` and needs nightly, which the pure core

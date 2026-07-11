@@ -94,13 +94,13 @@ For L2, additionally **cache per-(state, class-scope) identifier masks**: the se
 
 ### 4.6 Shipped M5 baseline (the locked performance record)
 
-The criterion suite (`benches/allowed_mask.rs`) locks the shipped per-step baseline. The intended regression guard is CodSpeed (the `bench` job — deterministic *instruction count*, walltime-independent, so it reproduces faithfully in CI), but it is **opt-in, not yet an enforced merge check**: the `bench` job is gated behind `vars.CODSPEED_ENABLED == 'true'`, so until the CodSpeed app is installed and that variable is set, it posts perf deltas without blocking a PR. Once enabled, CodSpeed's instruction-count delta is what fails a PR; the wall-clock figures below are always representative and machine-dependent — indicative shape, never the gate. Recommended CodSpeed threshold at first-lock: **±10 %** instruction count, ratcheted tighter over time (a PROTECTED gate only tightens).
+The criterion suite (`benches/allowed_mask.rs`) locks the shipped per-step baseline. The intended regression guard is CodSpeed (the `bench` job — deterministic *instruction count*, walltime-independent, so it reproduces faithfully in CI), but it is **opt-in, not yet an enforced merge check**: the `bench` job is gated behind `vars.CODSPEED_ENABLED == 'true'`, so until the CodSpeed app is installed and that variable is set, it posts perf deltas without blocking a PR. Once enabled, CodSpeed's instruction-count delta is what fails a PR. Recommended CodSpeed threshold at first-lock: **±10 %** instruction count, ratcheted tighter over time (a PROTECTED gate only tightens).
 
-The families and what they establish:
+The families and the *relative* cost each establishes (no absolute figures are quoted here: there is no gate asserting a hand-copied number against the bench output, so only the shape is stated — the bench itself holds the measurements):
 
-- **`allowed_mask`** — steady-state per step. Shallow and identifier positions are sub-µs; the deep-stack worst case (nested open frames, maximal context-dependent re-probe) is a few hundred µs — inside the **≤ a few hundred µs/token** target (§4.5), and dwarfed by the model's ms-scale forward pass.
-- **`accept_token`** — a whole-token advance is tens of ns (a byte-fold through a PDA clone).
-- **`cache_win`** — the M2 partition cache: a warm step (word-wise copy) is ~4 orders of magnitude cheaper than a cold first-visit build (which probes all ~150k tokens). This is why the lazy per-state cache is load-bearing, not an optimization.
+- **`allowed_mask`** — steady-state per step, and the cheapest at shallow and identifier positions. The deep-stack worst case (nested open frames, maximal context-dependent re-probe) is the costliest per-step path, but stays inside the **≤ a few hundred µs/token** design target (§4.5) and is dominated by the model's forward pass.
+- **`accept_token`** — a whole-token advance is cheap: a byte-fold through a PDA clone.
+- **`cache_win`** — the M2 partition cache: a warm step (word-wise copy) is dramatically cheaper than a cold first-visit build (which probes the whole ~150k-token vocabulary). This is why the lazy per-state cache is load-bearing, not an optimization.
 - **`l2_overhead`** — the schema-narrowing block at an identifier position adds a small constant over the L1 mask (the `intersect` plus the scope-legal set build); L2 ⊆ L1 by construction, so it only ever narrows.
 
 ---
