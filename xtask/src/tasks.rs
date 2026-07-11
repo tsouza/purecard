@@ -327,18 +327,26 @@ pub fn check_core_deplight() -> Result<()> {
 /// per-dependency sub-table header `[dependencies.<name>]` — the latter declares
 /// `<name>` too, so skipping it would let a runtime dep slip past the gate.
 fn core_dependency_entries(toml_src: &str) -> Vec<String> {
-    let mut entries = Vec::new();
+    let mut entries: Vec<String> = Vec::new();
+    // Parallel to `entries`: whether each dependency carries `optional = true`. An
+    // optional dependency compiles only when a feature turns it on (e.g. the
+    // `python`-gated pyo3/self_cell), so it is absent from the default build and
+    // from `cargo package`'s compiled surface — the dep-light gate must not count
+    // it. Tracked alongside the name because `optional = true` can sit on the
+    // entry's own inline line OR on a later line of its `[dependencies.<name>]`
+    // sub-table body.
+    let mut optional: Vec<bool> = Vec::new();
     let mut in_deps = false;
     // When inside a `[dependencies.<alias>]` sub-table body, this is the index in
-    // `entries` of the alias name, so a `package = "…"` override line inside the
-    // body can rewrite it to the real crate name the allowlist must be checked
-    // against.
+    // `entries` of the alias name, so a `package = "…"`/`optional = true` line
+    // inside the body can rewrite / flag it.
     let mut subtable_entry: Option<usize> = None;
     for raw_line in toml_src.lines() {
         // Strip any trailing comment *before* parsing: a `#` outside a quoted string
         // begins a TOML comment, which Cargo ignores. Parsing it as live TOML lets a
         // comment (`serde = { … } # package = "thiserror"`) spoof a `package =`
-        // rename and slip a disallowed crate past the allowlist (constitution §7).
+        // rename — or a `# optional = true` fake-skip a real dep — past the
+        // allowlist (constitution §7).
         let trimmed = strip_toml_comment(raw_line).trim();
         if trimmed.is_empty() {
             continue;
@@ -351,15 +359,20 @@ fn core_dependency_entries(toml_src: &str) -> Vec<String> {
             if let Some(name) = subtable_dependency_name(trimmed) {
                 subtable_entry = Some(entries.len());
                 entries.push(name);
+                optional.push(false);
             }
             in_deps = trimmed == CORE_DEPS_TABLE;
             continue;
         }
         // Inside a `[dependencies.<alias>]` body, a `package = "real"` line renames
-        // the dependency: the gate must check `real`, not the alias key.
+        // the dependency (check `real`, not the alias key) and an `optional = true`
+        // line marks it feature-gated.
         if let Some(idx) = subtable_entry {
             if let Some(real) = package_override(trimmed) {
                 entries[idx] = real;
+            }
+            if toml_flag_is_true(trimmed, "optional") {
+                optional[idx] = true;
             }
             continue;
         }
@@ -373,10 +386,16 @@ fn core_dependency_entries(toml_src: &str) -> Vec<String> {
                 // its real crate; without the override the key IS the crate name.
                 let real = package_override(trimmed).unwrap_or_else(|| name.to_string());
                 entries.push(real);
+                optional.push(toml_flag_is_true(trimmed, "optional"));
             }
         }
     }
+    // Only non-optional runtime deps face the allowlist gate.
     entries
+        .into_iter()
+        .zip(optional)
+        .filter_map(|(name, is_optional)| (!is_optional).then_some(name))
+        .collect()
 }
 
 /// The crate name from a Cargo `package = "<name>"` rename, if `line` carries one.
@@ -434,6 +453,40 @@ fn strip_toml_comment(line: &str) -> &str {
 /// (`packages`, `my_package`) is not mistaken for the `package` rename key.
 const fn is_key_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
+/// Whether `line` sets the bare TOML boolean key `flag` to `true` (e.g.
+/// `optional = true`, inline or on its own body line).
+///
+/// `flag` is matched only as a whole key — the same `is_key_byte` boundary check
+/// [`package_override`] uses — so a longer key (`optionally`) or a substring
+/// inside a quoted value never counts, and the value must be the literal `true`
+/// (`optional = false` reads as not-a-flag). Comment stripping happens in the
+/// caller, so a `# optional = true` cannot fake-skip a real dependency.
+fn toml_flag_is_true(line: &str, flag: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find(flag) {
+        let start = from + rel;
+        let end = start + flag.len();
+        let key_start = start == 0 || !is_key_byte(bytes[start - 1]);
+        let key_end = end >= bytes.len() || !is_key_byte(bytes[end]);
+        if key_start
+            && key_end
+            && let Some(value) = line[end..].trim_start().strip_prefix('=')
+        {
+            let token: String = value
+                .trim_start()
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect();
+            if token == "true" {
+                return true;
+            }
+        }
+        from = end;
+    }
+    false
 }
 
 /// Core `[dependencies]` entries not on `allowlist` — the deps that must fail the
@@ -827,6 +880,64 @@ tokio = \"1\"
             disallowed_core_deps(&core_dependency_entries(src), CORE_DEP_ALLOWLIST),
             ["tokio"]
         );
+    }
+
+    #[test]
+    fn an_optional_dependency_is_excluded_from_the_core_gate() {
+        // pyo3/self_cell (the M4 PyO3 boundary) land only behind the `python`
+        // feature (`optional = true`), so they are absent from the default build
+        // and `cargo package`'s compiled surface — the dep-light gate must not
+        // count them. Both TOML spellings, inline and sub-table.
+        let inline = "\
+[dependencies]
+thiserror = \"2\"
+pyo3 = { version = \"0.29.0\", optional = true }
+self_cell = { version = \"1.2.2\", optional = true }
+";
+        assert_eq!(core_dependency_entries(inline), ["thiserror"]);
+        assert!(
+            disallowed_core_deps(&core_dependency_entries(inline), CORE_DEP_ALLOWLIST).is_empty()
+        );
+
+        let subtable = "\
+[dependencies]
+thiserror = \"2\"
+
+[dependencies.pyo3]
+version = \"0.29.0\"
+optional = true
+";
+        assert_eq!(core_dependency_entries(subtable), ["thiserror"]);
+        assert!(
+            disallowed_core_deps(&core_dependency_entries(subtable), CORE_DEP_ALLOWLIST).is_empty()
+        );
+    }
+
+    #[test]
+    fn a_non_optional_non_allowlisted_dependency_still_fails_the_gate() {
+        // The optional-skip must not become a blanket bypass: a dependency that is
+        // NOT optional (or is `optional = false`) and off the allowlist still
+        // reddens the gate. `optional` matched only as a whole key.
+        let explicit_false = "\
+[dependencies]
+tokio = { version = \"1\", optional = false }
+";
+        assert_eq!(core_dependency_entries(explicit_false), ["tokio"]);
+        assert_eq!(
+            disallowed_core_deps(&core_dependency_entries(explicit_false), CORE_DEP_ALLOWLIST),
+            ["tokio"]
+        );
+
+        // A longer key containing `optional` is not the flag.
+        assert!(!toml_flag_is_true("optionally = true", "optional"));
+        // A commented flag cannot skip a dep: the caller strips comments first, so
+        // the live line the gate sees has no `optional = true`.
+        let commented = "\
+[dependencies.tokio]
+version = \"1\"
+# optional = true
+";
+        assert_eq!(core_dependency_entries(commented), ["tokio"]);
     }
 
     #[test]

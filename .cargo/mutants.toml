@@ -11,11 +11,18 @@
 # mutants build, and the pure `classify_return_type` it delegates to is
 # mutation-tested by the always-on `tests/classify_oracle.rs` binary.
 #
+# `src/ffi.rs` — the M4 PyO3 boundary — is excluded: it is `#[cfg(feature =
+# "python")]`, so the default-feature mutants build does not compile it, and it is
+# driven only by the hermetic pytest lane (`python/tests/`), never by `cargo test`
+# — the sole harness `cargo mutants` runs. A mutant there would always "survive"
+# for want of a compiled, cargo-test-reachable body, not for want of a test. Its
+# one piece of pure marshaling logic, `BitMask::pack_le_bytes_into`, lives in
+# `src/mask.rs` (default build) and stays fully mutation-tested there.
+#
 # `examine_globs` is an explicit allowlist, not a denylist: mutation is confined
-# to the shipped dep-light core under `src/` (lib.rs + vocab.rs). An allowlist
-# is the policy-matching form — a bare `exclude_globs = ["xtask/**"]` would leave
-# `tests/` harness helpers eligible, mutating dev-only code the floor never meant
-# to cover. `xtask/**` stays excluded for defense in depth (it is outside `src/`
-# regardless).
+# to the shipped dep-light core under `src/`. An allowlist is the policy-matching
+# form — a bare `exclude_globs = ["xtask/**"]` would leave `tests/` harness helpers
+# eligible, mutating dev-only code the floor never meant to cover. `xtask/**` stays
+# excluded for defense in depth (it is outside `src/` regardless).
 examine_globs = ["src/**/*.rs"]
-exclude_globs = ["xtask/**"]
+exclude_globs = ["xtask/**", "src/ffi.rs"]

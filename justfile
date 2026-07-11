@@ -159,6 +159,29 @@ docs:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
 # ---------------------------------------------------------------------------
+# Python boundary (M4): PyO3 ffi + maturin wheel
+# ---------------------------------------------------------------------------
+
+# Type-check the feature-gated PyO3 boundary (src/ffi.rs) without building a
+# wheel. `cargo xtask ci`'s `clippy --all-features` already type-checks this on
+# every PR; this is the fast, targeted inner-loop gate (constitution §1: prove
+# the binding compiles under `#![forbid(unsafe_code)]`).
+check-ffi:
+    cargo check --features python
+
+# Build the abi3 Python wheel via maturin. One forward-compatible wheel serves
+# CPython >= 3.9 (pyo3 abi3-py39). Needs `maturin` on PATH (`mise install`).
+wheel:
+    maturin build --release --features python
+
+# Build the extension in-place into the active virtualenv and run the hermetic
+# pytest suite over a synthetic vocabulary (no model, no engine). Needs maturin +
+# a Python with pytest available.
+test-python:
+    maturin develop --features python
+    python -m pytest python/tests
+
+# ---------------------------------------------------------------------------
 # Structural / hygiene checks
 # ---------------------------------------------------------------------------
 
