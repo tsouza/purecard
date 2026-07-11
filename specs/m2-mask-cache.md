@@ -117,7 +117,7 @@ The exact `consulted_ambient` classification (Decision D5) makes a conservative
 token precisely — so the shipped `CompiledGrammar` carries only the vocab and the
 lazy cache.
 
-`cache` is interior-mutable (`OnceCell`) so `allowed_mask(&self)` fills the entry for a state on first visit (§4.5): only reached states pay the build.
+`cache` is interior-mutable (`OnceCell`) so `CompiledGrammar::cached(&self, …)` fills the entry for a state on first visit (§4.5): only reached states pay the build. `DecoderSession::allowed_mask(&mut self)` (below) then copies that cached entry into the session's own reusable `mask` buffer and flips the context-dependent bits — hence `&mut self`.
 
 ### The mask computation
 

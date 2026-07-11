@@ -118,30 +118,17 @@ impl BitMask {
     }
 
     /// Iterate the ids of every set bit, ascending.
+    ///
+    /// Scans each word's bit positions over the fixed `0..WORD_BITS` range rather
+    /// than a stateful clear-lowest-bit loop: the bounded range cannot be mutated
+    /// into a non-terminating iterator (a wrong-bit mutation yields wrong ids that
+    /// the tests catch immediately, never a hang). `iter_ones` is an inspection
+    /// helper, not on the per-step mask-compute path, so the per-bit scan is fine.
     pub fn iter_ones(&self) -> impl Iterator<Item = u32> + '_ {
         self.words.iter().enumerate().flat_map(|(word, &bits)| {
             let base = (word as u32) * WORD_BITS;
-            OnesInWord { bits }.map(move |bit| base + bit)
+            (0..WORD_BITS).filter_map(move |bit| (bits & (1u64 << bit) != 0).then_some(base + bit))
         })
-    }
-}
-
-/// Yields the positions of the set bits in a single word, lowest first.
-struct OnesInWord {
-    bits: u64,
-}
-
-impl Iterator for OnesInWord {
-    type Item = u32;
-
-    fn next(&mut self) -> Option<u32> {
-        if self.bits == 0 {
-            return None;
-        }
-        let bit = self.bits.trailing_zeros();
-        // Clear the lowest set bit.
-        self.bits &= self.bits - 1;
-        Some(bit)
     }
 }
 
