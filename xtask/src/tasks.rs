@@ -324,16 +324,31 @@ pub fn check_core_deplight() -> Result<()> {
 fn core_dependency_entries(toml_src: &str) -> Vec<String> {
     let mut entries = Vec::new();
     let mut in_deps = false;
+    // When inside a `[dependencies.<alias>]` sub-table body, this is the index in
+    // `entries` of the alias name, so a `package = "…"` override line inside the
+    // body can rewrite it to the real crate name the allowlist must be checked
+    // against.
+    let mut subtable_entry: Option<usize> = None;
     for line in toml_src.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
+            subtable_entry = None;
             // A `[dependencies.<name>]` header is itself a dependency
             // declaration; record `<name>` and leave `in_deps` false so the
             // sub-table's own fields (`version`, `features`, …) aren't miscounted.
             if let Some(name) = subtable_dependency_name(trimmed) {
+                subtable_entry = Some(entries.len());
                 entries.push(name);
             }
             in_deps = trimmed == CORE_DEPS_TABLE;
+            continue;
+        }
+        // Inside a `[dependencies.<alias>]` body, a `package = "real"` line renames
+        // the dependency: the gate must check `real`, not the alias key.
+        if let Some(idx) = subtable_entry {
+            if let Some(real) = package_override(trimmed) {
+                entries[idx] = real;
+            }
             continue;
         }
         if !in_deps || trimmed.is_empty() || trimmed.starts_with('#') {
@@ -342,11 +357,53 @@ fn core_dependency_entries(toml_src: &str) -> Vec<String> {
         if let Some(name) = trimmed.split(['=', '.']).next() {
             let name = name.trim();
             if !name.is_empty() {
-                entries.push(name.to_string());
+                // An inline `alias = { package = "real", … }` renames the entry to
+                // its real crate; without the override the key IS the crate name.
+                let real = package_override(trimmed).unwrap_or_else(|| name.to_string());
+                entries.push(real);
             }
         }
     }
     entries
+}
+
+/// The crate name from a Cargo `package = "<name>"` rename, if `line` carries one.
+///
+/// The check resolves a dependency's *real* package — the `[[bin]]`-style alias
+/// trick `alias = { package = "serde" }` (or the sub-table `package = "serde"`
+/// field) declares crate `serde` under the key `alias`, so scanning the key alone
+/// would let an unallowlisted crate hide behind an allowlisted alias. `package` is
+/// matched only as a whole key (`=`-delimited, not a substring of `packages`),
+/// then its single- or double-quoted string value is returned.
+fn package_override(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = line[from..].find("package") {
+        let start = from + rel;
+        let end = start + "package".len();
+        let key_start = start == 0 || !is_key_byte(bytes[start - 1]);
+        let after = line[end..].trim_start();
+        if key_start && let Some(value) = after.strip_prefix('=') {
+            let value = value.trim_start();
+            let quote = match value.as_bytes().first() {
+                Some(&b'"') => '"',
+                Some(&b'\'') => '\'',
+                _ => return None,
+            };
+            let body = &value[1..];
+            let close = body.find(quote)?;
+            let name = body[..close].trim();
+            return (!name.is_empty()).then(|| name.to_owned());
+        }
+        from = end;
+    }
+    None
+}
+
+/// Whether `byte` may appear in a bare TOML key, so `package` inside a longer key
+/// (`packages`, `my_package`) is not mistaken for the `package` rename key.
+const fn is_key_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
 
 /// Core `[dependencies]` entries not on `allowlist` — the deps that must fail the
@@ -690,6 +747,46 @@ features = [\"derive\"]
 ureq = \"3\"
 ";
         assert_eq!(core_dependency_entries(src), ["serde"]);
+    }
+
+    #[test]
+    fn a_package_alias_is_resolved_to_the_real_crate() {
+        // The gate must check a dependency's REAL package, not the key it hides
+        // behind: `thiserror = { package = "serde" }` is `serde`, and pointing a
+        // `thiserror` key at `serde` must NOT sneak past the `thiserror`-only
+        // allowlist. Both TOML spellings of the rename are covered.
+        let inline = "\
+[dependencies]
+thiserror = { package = \"serde\", version = \"1\" }
+";
+        assert_eq!(core_dependency_entries(inline), ["serde"]);
+        assert_eq!(
+            disallowed_core_deps(&core_dependency_entries(inline), CORE_DEP_ALLOWLIST),
+            ["serde"]
+        );
+
+        let subtable = "\
+[dependencies.thiserror]
+package = \"serde\"
+version = \"1\"
+";
+        assert_eq!(core_dependency_entries(subtable), ["serde"]);
+        assert_eq!(
+            disallowed_core_deps(&core_dependency_entries(subtable), CORE_DEP_ALLOWLIST),
+            ["serde"]
+        );
+    }
+
+    #[test]
+    fn a_package_substring_key_is_not_a_rename() {
+        // A key that merely contains `package` (or a value that does) is not a
+        // `package = "…"` rename: the real crate stays the declared key.
+        assert!(package_override("packages = [\"a\"]").is_none());
+        assert!(package_override("my_package = \"1\"").is_none());
+        assert_eq!(
+            core_dependency_entries("[dependencies]\nserde = { version = \"1\" }\n"),
+            ["serde"]
+        );
     }
 
     #[test]

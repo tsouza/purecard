@@ -1,6 +1,10 @@
 # Spec: M1 — L1 emitted-Pure grammar (byte-PDA)
 
-- **Status:** Draft — awaiting human sign-off on the scope decision below
+- **Status:** In progress — both-arms scope approved and settled in ADR-0004.
+  Soundness (G1/G2/G4) delivered and gated; precision now pinned by the negative
+  reject corpus and the seeded completeness walker (G3/T8 — the engine
+  compile-*rate* clause is deferred to M2, see G3). Remaining: property + mutation
+  floors (G5/T9).
 - **Created:** 2026-07-11
 - **Owner:** decoder core (purecard crate)
 - **Supersedes:** M0's throwaway `StubDecoder` / `tests/support/recognizer.rs`
@@ -81,22 +85,29 @@ so this edit + its ADR is a **human decision** (see *Decisions for the human*).
 
 Mapped to the done-criterion; soundness-gate scope stated precisely.
 
-- [ ] **G1 — Real PDA in `src/`.** A hand-written byte-PDA replaces `StubDecoder`;
+- [x] **G1 — Real PDA in `src/`.** A hand-written byte-PDA replaces `StubDecoder`;
       the recognizer trait and impl live in shipped `src/`, not `tests/support/`.
-- [ ] **G2 — Soundness over the FULL 5,034 (both arms).** The killer test drives
+- [x] **G2 — Soundness over the FULL 5,034 (both arms).** The killer test drives
       every gold `pure_text` byte-by-byte through the shipped PDA and asserts: never
       `DeadState`, and `is_complete()` at EOS. **Gate scope = all 5,034**, asserted
       per-envelope partition (4,639 arm-A + 395 arm-C), with an exact record count.
       This is the honest, unreduced scope — no quarantine.
-- [ ] **G3 — 100% constrained-walk compile.** A seeded PDA walk generator emits
-      accepting byte-strings that the engine lane compiles at 100% (engine-gated
-      job, not the hermetic soundness job).
-- [ ] **G4 — Oracle-driven tightening surface.** `DecodeError::DeadState` carries
+- [~] **G3 — constrained-walk compile.** *Partially delivered.* The seeded PDA walk
+      generator (`tests/support/walker.rs`) and its hermetic self-test
+      (`tests/completeness_walks.rs`, in `just ci`) are landed, and the engine lane
+      is wired (`tests/legend_completeness.rs`, `--features legend`) to round-trip
+      every walk. The **100% compile-*rate*** assertion is **deferred to M2**: a
+      random L1-accepting walk names classes/properties that don't resolve, so a
+      real compile rate needs the §14.2 `grammarToJson` lowering *and* the L2 schema
+      overlay that constrains walks to a model. Precision is meanwhile pinned by the
+      negative reject corpus (`tests/precision_reject.rs`, hermetic).
+- [x] **G4 — Oracle-driven tightening surface.** `DecodeError::DeadState` carries
       `{ offset, byte, state, stack_top }` so a soundness failure names exactly the
       byte/state/stack that rejected it (§8.6 relaxation loop).
-- [ ] **G5 — Gates stay green & dep-light.** `just ci` green; core `[dependencies]`
-      gains only `thiserror` (via an allowlist in the deplight gate, not by
-      disabling it); coverage ≥ 70%, mutation floor set and ratcheting on `step`.
+- [~] **G5 — Gates stay green & dep-light.** *Partially delivered.* `just ci` green;
+      core `[dependencies]` gains only `thiserror` (via an allowlist in the deplight
+      gate — now hardened to resolve `package = "…"` aliases — not by disabling it);
+      coverage ≥ 70%. The **mutation floor on `step`** is the remaining T9 item.
 
 ## Non-goals
 
@@ -201,11 +212,16 @@ Beyond arm-C's productions, arm-A requires: `tableReference(strlit, strlit)`,
 `{ b1:…[1], b2:…[1] | boolExpr }`; `join(<sub-pipeline>, JoinType.(INNER|LEFT_OUTER),
 lambda)`; `renameColumns([ strlit "->" "pair" "(" strlit ")" … ])`; `extend([ col(…) … ])`;
 `limit(int)`; **string-or-list `restrict`** (`restrict('Rank')` *and* `restrict([...])`)
-and **string-key `groupBy`**; the `between(...)` boolPred. Observed frequencies:
+and **string-key `groupBy`**; the `between(...)` boolPred. **Total raw occurrences**
+(every appearance across the corpus, *not* distinct queries — a single query
+repeats a construct, so these run higher than the per-query-containing counts):
 `join` 3,803, `renameColumns` 8,979, `pair` 32,308, `limit` 665, `extend` 450,
-`between` 35. The implementation locks this inventory against the corpus (task T7)
-— *"do not invent productions the corpus doesn't exercise, do not omit ones it does"*
-(§5 core principle).
+`between` 35. These are the occurrence totals; the authoritative **queries-containing**
+counts that the grammar is locked against live in `docs/spec/grammar.md` §5.7 (e.g.
+`pair` occurs 32,308× but in 2,378 distinct queries; `limit`/`between` appear
+≤once per query, so their two counts coincide). The implementation locks this
+inventory against the corpus (task T7) — *"do not invent productions the corpus
+doesn't exercise, do not omit ones it does"* (§5 core principle).
 
 ### The recognizer replacing StubDecoder
 
@@ -326,33 +342,39 @@ Per constitution §5, each such fix also lands the unit test that pins that cons
 Each is a small, independently testable + committable PR (one change → one worktree
 → one PR).
 
-- [ ] **T0 — §5 spec widening + ADR** (human-gated). Document the arm-A relational
+- [x] **T0 — §5 spec widening + ADR** (human-gated). Document the arm-A relational
       envelope and its construct inventory in §5; record the both-arms scope decision
-      as an ADR. Blocks all code tasks.
-- [ ] **T1 — Core plumbing.** Move `DecodeError` into `src/error.rs` (extended
+      as an ADR (ADR-0004). Blocks all code tasks.
+- [x] **T1 — Core plumbing.** Move `DecodeError` into `src/error.rs` (extended
       fields); add `thiserror` to `[dependencies]`; tighten `check-core-deplight` to
       the `{thiserror}` allowlist; move the `ByteRecognizer` trait into
       `src/recognizer.rs`. Green: existing tests compile against the new surface.
-- [ ] **T2 — Lexis + WS layer.** `ByteClass` consts; `InWs` skip; `InIdent`/
+- [x] **T2 — Lexis + WS layer.** `ByteClass` consts; `InWs` skip; `InIdent`/
       `Classpath` (`::`); `InStrLit{escaped}` with `''` doubling. Unit-green.
-- [ ] **T3 — Arm-C spine.** `.all()` source → pipeline → `->step` continuation stack
+- [x] **T3 — Arm-C spine.** `.all()` source → pipeline → `->step` continuation stack
       → bracket frames. Bare-binder lambda `x|boolExpr`; nested subquery frames
       (`->in(pipeline.col)`). Wire the soundness test on the **395 arm-C** partition
       → green. (Full harness now exercised end-to-end against a sound gate.)
-- [ ] **T4 — Arm-C steps.** `filter`/`project`/`groupBy`/`restrict`/`sort`/`take`/
+- [x] **T4 — Arm-C steps.** `filter`/`project`/`groupBy`/`restrict`/`sort`/`take`/
       `distinct`/`olapGroupBy`, `agg` (2-arg), reducers, `colAccess`/`toOne`. Arm-C
       partition still green.
-- [ ] **T5 — Arm-A envelope.** `->tableReference(str,str)->tableToTDS()`; `Envelope`
+- [x] **T5 — Arm-A envelope.** `->tableReference(str,str)->tableToTDS()`; `Envelope`
       classifier; branch at `source`. Arm-A queries begin accepting.
-- [ ] **T6 — Arm-A productions.** Typed-multiplicity + brace-multi binders; 3-arg
+- [x] **T6 — Arm-A productions.** Typed-multiplicity + brace-multi binders; 3-arg
       string-named `agg`; string-or-list `restrict`/`groupBy`; `join`+`JoinType`+
       sub-pipeline; `renameColumns`/`pair`; `extend`/`col`; `limit`; `between`.
-- [ ] **T7 — Full soundness green.** Flip the gate to all **5,034**, per-partition
+- [x] **T7 — Full soundness green.** Flip the gate to all **5,034**, per-partition
       assertions + exact counts. Lock §5.7 inventory against the corpus. **G2 done.**
-- [ ] **T8 — Completeness walker** (seeded, committed seeds) → engine job, 100%
-      compile, both arms. **G3 done.**
+- [~] **T8 — Completeness walker** (seeded, committed seeds). *Walker + hermetic
+      self-test delivered* (`tests/support/walker.rs`, `tests/completeness_walks.rs`
+      in `just ci`); the engine lane is wired behind `--features legend`. The
+      **100%-compile-rate, both-arms** engine assertion is **deferred to M2**: it
+      needs §14.2 `grammarToJson` lowering and the L2 schema overlay to make walks
+      semantically resolvable (an unschema'd L1 walk cannot compile by
+      construction). The precision that T8 was meant to prove is meanwhile pinned
+      hermetically by the negative reject corpus (`tests/precision_reject.rs`).
 - [ ] **T9 — Property + mutation.** Add §8.5 property tests; set the `cargo-mutants`
-      floor on `step`/classifier; confirm coverage ≥ 70%. **G5 done.**
+      floor on `step`/classifier; confirm coverage ≥ 70%. **G5 remaining.**
 
 ## Decisions for the human
 

@@ -172,10 +172,18 @@ The grammar over-approximates validity where a CFG cannot cheaply enforce a cons
 
 ### 5.7 Observed construct inventory (the empirical spec)
 
-Counts are **queries containing the construct**, over the full **5,034-query**
+Counts in the **Queries** column are **distinct queries containing the construct
+at least once** — *not* raw occurrence totals — over the full **5,034-query**
 corpus (`corpus/gold_queries.jsonl`: 4,639 arm-A + 395 arm-C), recomputed this
-session. Every construct here MUST parse; anything absent here is *not yet* in the
-grammar (add on first gold occurrence, per §5's core principle).
+session. This is deliberately a different measure from the *total occurrences*
+quoted in prose (§5.2 and `specs/m1-l1-grammar.md`): a construct that repeats
+within one query (`pair` appears 32,308 times but in 2,378 queries; `tableReference`
+8,455 times in 4,639 queries) has a higher occurrence total than its
+queries-containing count, while a once-per-query construct (`limit`, `between`)
+has equal counts. The queries-containing figures here are the authoritative
+inventory the grammar is locked against. Every construct here MUST parse; anything
+absent here is *not yet* in the grammar (add on first gold occurrence, per §5's
+core principle).
 
 **Arm-A relational envelope and steps** (the 92.2% majority idiom):
 
