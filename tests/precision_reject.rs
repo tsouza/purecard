@@ -15,13 +15,20 @@
 //! genuine refusals — a decoder that never dead-ends but never completes has still
 //! declined the string.
 
-use purecard::{ByteRecognizer, DecodeError, DecoderSession};
+use purecard::{ByteRecognizer, CompiledGrammar, DecodeError, DecoderSession, Vocab};
+
+/// An L1-only grammar over an empty vocabulary — the reject gate drives only the
+/// byte-recognizer surface, which never consults the vocab.
+fn l1_grammar() -> CompiledGrammar {
+    CompiledGrammar::compile(Vocab::from_byte_tokens(Vec::new(), 0))
+}
 
 /// Drive `text` through a fresh real [`DecoderSession`] and report whether the
 /// recogniser refuses it — a mid-stream dead state, or an incomplete stream at
 /// end-of-input. The mirror image of `soundness_replay::replay`.
 fn dies(text: &str) -> bool {
-    let mut session = DecoderSession::new();
+    let grammar = l1_grammar();
+    let mut session = DecoderSession::new(&grammar);
     for &byte in text.as_bytes() {
         if let Err(DecodeError::DeadState { .. }) = session.accept_byte(byte) {
             return true;

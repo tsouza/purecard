@@ -31,13 +31,16 @@
 
 pub mod error;
 pub mod grammar;
+pub mod mask;
 pub mod recognizer;
 pub mod session;
 pub mod vocab;
 
 pub use error::DecodeError;
 pub use grammar::Envelope;
+pub use grammar::compiled::CompiledGrammar;
 pub use grammar::pda::Pda;
+pub use mask::BitMask;
 pub use recognizer::ByteRecognizer;
 pub use session::DecoderSession;
 pub use vocab::Vocab;

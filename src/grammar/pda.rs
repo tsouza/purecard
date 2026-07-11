@@ -47,7 +47,7 @@ use crate::grammar::DeadState;
 /// one and expects an operator, separator, or closer). Every other variant is a
 /// transient lexical position: inside an identifier, number, string, or date
 /// literal, or one byte into a multi-byte operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum State {
     /// Before the first byte: only `|` (a simple query) or `{` (a block query)
     /// may open the stream.
@@ -231,7 +231,80 @@ impl State {
             State::SawAmp => "SawAmp",
         }
     }
+
+    /// A stable dense index in `0..`[`COUNT`](State::COUNT), so a per-state cache
+    /// can be a plain `Vec` keyed by state (§4.2).
+    ///
+    /// The match is **exhaustive with no wildcard arm**: adding a `State` variant
+    /// without extending this map is a compile error, not a silent cache
+    /// mis-index (Risk R4, constitution §5 — the fix closes the whole class). The
+    /// two [`InStrLit`](State::InStrLit) configurations are distinct automaton
+    /// states, so they take distinct indices. `index_is_a_bijection` pins that the
+    /// map is one-to-one onto `0..COUNT`.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            State::Start => 0,
+            State::ExpectSource => 1,
+            State::AfterBraceOpen => 2,
+            State::BlockStmt => 3,
+            State::BlockStmtClose => 4,
+            State::InSourceIdent => 5,
+            State::SourceColon => 6,
+            State::SourceColon2 => 7,
+            State::SourceDash => 8,
+            State::LetL => 9,
+            State::LetLe => 10,
+            State::LetLet => 11,
+            State::ExpectBinder => 12,
+            State::InBinder => 13,
+            State::AfterBinder => 14,
+            State::InMultiplicity => 15,
+            State::ExpectBraceBinder => 16,
+            State::AfterColonWs => 17,
+            State::ExpectValue => 18,
+            State::ExpectValueReq => 19,
+            State::AfterValue => 20,
+            State::InIdent => 21,
+            State::SawNumSign => 22,
+            State::InNumberInt => 23,
+            State::NeedFracDigit => 24,
+            State::InNumberFrac => 25,
+            State::InStrLit { escaped: false } => 26,
+            State::InStrLit { escaped: true } => 27,
+            State::SawPercent => 28,
+            State::InDateLit => 29,
+            State::AfterDollar => 30,
+            State::AfterDot => 31,
+            State::AfterArrow => 32,
+            State::AfterColon => 33,
+            State::AfterColon2 => 34,
+            State::SawDash => 35,
+            State::SawPipe => 36,
+            State::SawEq => 37,
+            State::SawBang => 38,
+            State::SawGt => 39,
+            State::SawLt => 40,
+            State::SawAmp => 41,
+        }
+    }
+
+    /// The number of distinct automaton states — the length a per-state cache
+    /// (`Vec<_>` keyed by [`index`](State::index)) must have. One more than the
+    /// largest [`index`](State::index).
+    pub const COUNT: usize = 42;
 }
+
+/// Every [`Frame`] kind — the whole stack alphabet. Used by [`Pda::probe`] to
+/// decide whether a byte that dies against an *empty* local scratch would have
+/// lived against *some* ambient frame (i.e. its admissibility is
+/// stack-dependent).
+const ALL_FRAMES: [Frame; 4] = [
+    Frame::Paren,
+    Frame::Bracket,
+    Frame::Brace,
+    Frame::BraceLambda,
+];
 
 /// A stack frame: an open delimiter awaiting its match.
 ///
@@ -782,6 +855,26 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
     }
 }
 
+/// The outcome of a [`Pda::probe`]: whether a candidate token's bytes keep the
+/// automaton alive, and whether deciding that consulted the ambient stack.
+///
+/// `consulted_ambient` is the exact context-dependence classifier the mask cache
+/// keys on (§4.2, Decision D5): it is `true` iff the probe died at a byte whose
+/// admissibility would have *differed* had a frame sat beneath the token's own
+/// (empty) local scratch — a bare closer `)]}` , or a `,`/`;`/`*` that needs an
+/// enclosing frame. Such a token cannot be resolved from state alone and is
+/// deferred to a per-step re-probe against the live stack. A token that stays
+/// alive against an empty scratch is, by construction, context-*independent*:
+/// every stack read it made was satisfied by a frame it had itself pushed, so no
+/// ambient stack can change its verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Probe {
+    /// Whether every byte was accepted (the automaton never died).
+    pub alive: bool,
+    /// Whether the verdict depended on the ambient (pre-existing) stack.
+    pub consulted_ambient: bool,
+}
+
 /// The mutable driver over [`step`]: a current [`State`] and a [`Frame`] stack.
 ///
 /// [`Pda`] owns no offset counter and reports no errors of its own — that is the
@@ -855,11 +948,242 @@ impl Pda {
         self.state = State::Start;
         self.stack.clear();
     }
+
+    /// A PDA pinned at `state` with an **empty** stack — the base configuration
+    /// the mask cache probes each candidate token from when it builds a state's
+    /// context-independent survivor set (§4.2).
+    #[must_use]
+    pub fn at(state: State) -> Self {
+        Self {
+            state,
+            stack: Vec::new(),
+        }
+    }
+
+    /// The current automaton state — the key a per-state mask cache indexes by.
+    #[must_use]
+    pub fn state(&self) -> State {
+        self.state
+    }
+
+    /// The frame on top of the stack, or `None` for an empty stack.
+    #[must_use]
+    pub fn stack_top(&self) -> Option<Frame> {
+        self.stack.last().copied()
+    }
+
+    /// Whether replaying `bytes` from the live configuration keeps the automaton
+    /// alive, reusing `scratch` as the throwaway stack so no per-call heap
+    /// allocation is needed. This is the per-step hot path (§4.3): it re-probes a
+    /// deferred token against the *live* stack and, unlike [`probe`](Pda::probe),
+    /// skips the context-dependence classification the build-time partition needs.
+    #[must_use]
+    pub fn admits(&self, bytes: &[u8], scratch: &mut Vec<Frame>) -> bool {
+        scratch.clear();
+        scratch.extend_from_slice(&self.stack);
+        let mut state = self.state;
+        for &byte in bytes {
+            let top = scratch.last().copied();
+            match step(state, top, byte) {
+                Step::Next(next) => state = next,
+                Step::Push(frame, next) => {
+                    scratch.push(frame);
+                    state = next;
+                }
+                // `step` yields `Pop` only when `top` matched the closer, so the
+                // scratch is non-empty here.
+                Step::Pop(next) => {
+                    scratch.pop();
+                    state = next;
+                }
+                Step::Dead => return false,
+            }
+        }
+        true
+    }
+
+    /// Replay `bytes` over [`step`] without touching the live automaton, also
+    /// classifying whether the verdict consulted the ambient stack — the
+    /// build-time partition step (§4.2). `scratch` is reused (its prior contents
+    /// discarded); seeding it from a [`Pda::at`] base (empty stack) is what
+    /// exposes context dependence through [`Probe::consulted_ambient`]. The hot
+    /// per-step path uses the leaner [`admits`](Pda::admits) instead.
+    #[must_use]
+    pub fn probe(&self, bytes: &[u8], scratch: &mut Vec<Frame>) -> Probe {
+        scratch.clear();
+        scratch.extend_from_slice(&self.stack);
+        let mut state = self.state;
+        for &byte in bytes {
+            let top = scratch.last().copied();
+            match step(state, top, byte) {
+                Step::Next(next) => state = next,
+                Step::Push(frame, next) => {
+                    scratch.push(frame);
+                    state = next;
+                }
+                Step::Pop(next) => {
+                    scratch.pop();
+                    state = next;
+                }
+                Step::Dead => {
+                    // The byte died against the local scratch. If the scratch is
+                    // empty and *some* enclosing frame would have kept the byte
+                    // alive (a matched closer, or a `,`/`;`/`*` that needs a
+                    // frame), the verdict is stack-dependent — defer it.
+                    let consulted_ambient = scratch.is_empty()
+                        && ALL_FRAMES
+                            .iter()
+                            .any(|&f| !matches!(step(state, Some(f), byte), Step::Dead));
+                    return Probe {
+                        alive: false,
+                        consulted_ambient,
+                    };
+                }
+            }
+        }
+        Probe {
+            alive: true,
+            consulted_ambient: false,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Frame, Pda, State, Step, WS, is_date_char, is_ident_start, is_ident_tail, step};
+
+    /// Every distinct automaton state, for the `index`/`COUNT` bijection check.
+    /// [`State::index`]'s exhaustive match already makes a new variant a compile
+    /// error; this list makes an index *collision or gap* a test failure too.
+    const ALL_STATES: [State; State::COUNT] = [
+        State::Start,
+        State::ExpectSource,
+        State::AfterBraceOpen,
+        State::BlockStmt,
+        State::BlockStmtClose,
+        State::InSourceIdent,
+        State::SourceColon,
+        State::SourceColon2,
+        State::SourceDash,
+        State::LetL,
+        State::LetLe,
+        State::LetLet,
+        State::ExpectBinder,
+        State::InBinder,
+        State::AfterBinder,
+        State::InMultiplicity,
+        State::ExpectBraceBinder,
+        State::AfterColonWs,
+        State::ExpectValue,
+        State::ExpectValueReq,
+        State::AfterValue,
+        State::InIdent,
+        State::SawNumSign,
+        State::InNumberInt,
+        State::NeedFracDigit,
+        State::InNumberFrac,
+        State::InStrLit { escaped: false },
+        State::InStrLit { escaped: true },
+        State::SawPercent,
+        State::InDateLit,
+        State::AfterDollar,
+        State::AfterDot,
+        State::AfterArrow,
+        State::AfterColon,
+        State::AfterColon2,
+        State::SawDash,
+        State::SawPipe,
+        State::SawEq,
+        State::SawBang,
+        State::SawGt,
+        State::SawLt,
+        State::SawAmp,
+    ];
+
+    #[test]
+    fn index_is_a_bijection_onto_zero_to_count() {
+        let mut seen = [false; State::COUNT];
+        for state in ALL_STATES {
+            let idx = state.index();
+            assert!(idx < State::COUNT, "{} out of range: {idx}", state.name());
+            assert!(!seen[idx], "index {idx} used twice (at {})", state.name());
+            seen[idx] = true;
+        }
+        assert!(seen.iter().all(|&hit| hit), "index left a gap in 0..COUNT");
+    }
+
+    #[test]
+    fn at_pins_a_state_over_an_empty_stack() {
+        let pda = Pda::at(State::AfterValue);
+        assert_eq!(pda.state(), State::AfterValue);
+        assert_eq!(pda.stack_top(), None);
+    }
+
+    #[test]
+    fn state_and_stack_top_track_the_live_automaton() {
+        let mut pda = Pda::new();
+        assert_eq!(pda.state(), State::Start);
+        for &byte in b"|X.all(" {
+            pda.advance(byte).expect("live");
+        }
+        // `(` pushed a Paren, and the machine sits in a value position.
+        assert_eq!(pda.stack_top(), Some(Frame::Paren));
+        assert_eq!(pda.state(), State::ExpectValue);
+    }
+
+    #[test]
+    fn probe_leaves_the_live_automaton_untouched() {
+        let mut pda = Pda::new();
+        for &byte in b"|X.all()->take(1" {
+            pda.advance(byte).expect("live");
+        }
+        let before = (pda.state(), pda.stack_top());
+        let mut scratch = Vec::new();
+        // A live probe of the matching `)` survives against the real Paren…
+        assert!(pda.probe(b")", &mut scratch).alive);
+        // …and a mismatched `]` dies — but neither mutates the automaton.
+        assert!(!pda.probe(b"]", &mut scratch).alive);
+        assert_eq!((pda.state(), pda.stack_top()), before);
+    }
+
+    #[test]
+    fn probe_flags_a_bare_closer_as_context_dependent() {
+        // From `AfterValue` over an empty stack, `)` dies but *would* have lived
+        // against a Paren — its verdict is stack-dependent.
+        let base = Pda::at(State::AfterValue);
+        let mut scratch = Vec::new();
+        let probe = base.probe(b")", &mut scratch);
+        assert!(!probe.alive);
+        assert!(probe.consulted_ambient);
+    }
+
+    #[test]
+    fn probe_flags_a_separator_as_context_dependent() {
+        // `,` needs *some* enclosing frame; over an empty stack it is deferred.
+        let base = Pda::at(State::AfterValue);
+        let mut scratch = Vec::new();
+        assert!(base.probe(b",", &mut scratch).consulted_ambient);
+    }
+
+    #[test]
+    fn probe_marks_a_state_only_death_as_context_independent() {
+        // `.` then a digit dies in `AfterDot` regardless of any ambient frame.
+        let base = Pda::at(State::AfterDot);
+        let mut scratch = Vec::new();
+        let probe = base.probe(b"5", &mut scratch);
+        assert!(!probe.alive);
+        assert!(!probe.consulted_ambient);
+    }
+
+    #[test]
+    fn probe_marks_a_survivor_as_context_independent() {
+        // An identifier byte lives from `AfterDot` and reads no stack.
+        let base = Pda::at(State::AfterDot);
+        let mut scratch = Vec::new();
+        let probe = base.probe(b"name", &mut scratch);
+        assert!(probe.alive);
+        assert!(!probe.consulted_ambient);
+    }
 
     /// Drive `bytes` through a fresh [`Pda`], returning it (or the first dead
     /// state) so a test can assert on the terminal configuration.

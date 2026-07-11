@@ -35,6 +35,20 @@ anyhow.workspace = true
 # (`default-features = false`): no rustls/ring/webpki-roots tree, smaller and
 # license-clean. `json` enables `send_json` / `Body::read_json` for the POST.
 ureq = { version = "3.3.0", default-features = false, features = ["json"] }
+# M2 mask testing (dev-only, so `check-core-deplight`'s `[dependencies] ⊆
+# {thiserror}` gate is untouched). `proptest` drives the §8.5 rollback/equivalence
+# properties from committed seeds (`proptest-regressions/`); `criterion` measures
+# `allowed_mask` latency (`benches/allowed_mask.rs`). Criterion runs with
+# `default-features = false` — no plotters/gnuplot/rayon tree, just the
+# `cargo_bench_support` harness needed for `harness = false` benches.
+proptest = "1.11.0"
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+
+# The M2 mask-latency benchmark (§4, G3). `harness = false` hands `main` to
+# criterion; `just bench` (`cargo bench --workspace`) picks it up.
+[[bench]]
+name = "allowed_mask"
+harness = false
 
 [workspace]
 resolver = "3"

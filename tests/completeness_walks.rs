@@ -11,8 +11,14 @@
 #[path = "support/walker.rs"]
 mod walker;
 
-use purecard::{ByteRecognizer, DecoderSession};
+use purecard::{ByteRecognizer, CompiledGrammar, DecoderSession, Vocab};
 use walker::{WALK_COUNT, generate_walks};
+
+/// An L1-only grammar over an empty vocabulary — this lane drives the
+/// byte-recognizer surface, which never consults the vocab.
+fn l1_grammar() -> CompiledGrammar {
+    CompiledGrammar::compile(Vocab::from_byte_tokens(Vec::new(), 0))
+}
 
 /// Every generated walk must stream cleanly through an independent
 /// [`DecoderSession`] and end complete — the walker's clone-and-probe must agree,
@@ -27,7 +33,8 @@ fn every_generated_walk_is_accepted_by_the_shipped_recognizer() {
     );
     for walk in &walks {
         let rendered = String::from_utf8_lossy(walk);
-        let mut session = DecoderSession::new();
+        let grammar = l1_grammar();
+        let mut session = DecoderSession::new(&grammar);
         for (offset, &byte) in walk.iter().enumerate() {
             session.accept_byte(byte).unwrap_or_else(|err| {
                 panic!("generated walk rejected at byte {offset}: {rendered:?} — {err}")

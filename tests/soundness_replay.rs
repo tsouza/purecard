@@ -25,7 +25,14 @@ mod corpus;
 mod error;
 
 use corpus::load_gold;
-use purecard::{ByteRecognizer, DecodeError, DecoderSession, Envelope};
+use purecard::{ByteRecognizer, CompiledGrammar, DecodeError, DecoderSession, Envelope, Vocab};
+
+/// An L1-only grammar over an empty vocabulary: the byte-recognizer surface this
+/// soundness gate drives never consults the vocab, so no synthetic tokens are
+/// needed to construct a session (M2 `DecoderSession::new` takes a grammar).
+fn l1_grammar() -> CompiledGrammar {
+    CompiledGrammar::compile(Vocab::from_byte_tokens(Vec::new(), 0))
+}
 
 /// Arm-A (relational envelope) record count. An exact named constant, not a
 /// threshold (constitution §4): a mis-partition must redden the gate.
@@ -45,7 +52,8 @@ fn corpus_path() -> PathBuf {
 /// end-of-stream; `Err` with the full oracle-tightening tuple otherwise, so a
 /// soundness failure names the exact byte/state/stack that rejected it.
 fn replay(bytes: &[u8]) -> Result<(), String> {
-    let mut session = DecoderSession::new();
+    let grammar = l1_grammar();
+    let mut session = DecoderSession::new(&grammar);
     for &byte in bytes {
         if let Err(DecodeError::DeadState {
             offset,
@@ -117,7 +125,8 @@ fn the_deadness_channel_fires_on_malformed_input_with_a_correct_offset() {
     // Pure — an extra ')' with no matching opener — to prove the single deadness
     // channel fires at the offending offset on the real automaton (not a stub).
     let malformed = "|X.all())";
-    let mut session = DecoderSession::new();
+    let grammar = l1_grammar();
+    let mut session = DecoderSession::new(&grammar);
     let mut error = None;
     for &byte in malformed.as_bytes() {
         if let Err(err) = session.accept_byte(byte) {
