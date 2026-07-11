@@ -15,17 +15,16 @@
 //!
 //! ## Status
 //!
-//! Milestone **M3** (L2 schema overlay). The shippable core is the
-//! [`GuaranteeLevel`] lattice, the [`vocab`] module's [`Vocab`] table (token id →
-//! raw bytes), the byte-level recogniser (the [`grammar`] module's hand-written
-//! pushdown automaton [`Pda`] over the emitted-Pure grammar (§5), the
-//! [`DecoderSession`] that drives it as a [`ByteRecognizer`], and the
-//! [`DecodeError`] it reports on a dead-end), the M2 mask cache
-//! ([`CompiledGrammar`]), and the M3 [`schema`] overlay: [`Schema::from_json`]
-//! ingests the host contract as JSON and [`DecoderSession::with_schema`] narrows
-//! the mask to schema-legal terminals at each identifier/operand position. The
-//! gold-corpus loader and the Legend completeness probe remain test-oracle
-//! scaffolding under `tests/` (see
+//! All milestones **M0–M5** are shipped. The core is the [`GuaranteeLevel`]
+//! lattice, the [`vocab`] module's [`Vocab`] table (token id → raw bytes), the
+//! byte-level recogniser (the [`grammar`] module's hand-written pushdown
+//! automaton [`Pda`] over the emitted-Pure grammar (§5), the [`DecoderSession`]
+//! that drives it as a [`ByteRecognizer`], and the [`DecodeError`] it reports),
+//! the M2 mask cache ([`CompiledGrammar`]), and the M3 [`schema`] overlay:
+//! [`Schema::from_json`] ingests the host contract as JSON and
+//! [`DecoderSession::with_schema`] narrows the mask to schema-legal terminals at
+//! each identifier/operand position. The gold-corpus loader and the Legend
+//! completeness probe remain test-oracle scaffolding under `tests/` (see
 //! `docs/decisions/0003-non-core-in-tests-deplight-core.md`); the core's runtime
 //! dependencies are `thiserror` (error types) and `serde`/`serde_json` (the L2
 //! JSON ingress, ADR-0005).
@@ -34,6 +33,22 @@
 //! (compiled only under `--features python`) marshals the core to a Python
 //! `purecard` extension module — a thin, decode-logic-free surface packaged as a
 //! maturin abi3 wheel. The default build stays pyo3-free and pure.
+//!
+//! Milestone **M5** is the hardening pass: the [`selfcheck`] surface
+//! ([`self_check`], [`self_check_smoke`], [`SelfCheckError`]) round-trips a host
+//! tokenizer against the vocabulary before decode; [`accept_token`] finalizes on
+//! the reserved EOS sentinel — the id one past the last vocab token
+//! (`CompiledGrammar::eos_bit`), distinct from every real token id — accepted
+//! only when the byte-PDA is in an accepting configuration (a complete query:
+//! every frame closed and the last token lexed at a value boundary, so a trailing
+//! top-level identifier terminates cleanly); the
+//! [`DecodeError`] token-level channel is split into
+//! [`InadmissibleToken`](DecodeError::InadmissibleToken),
+//! [`UnknownToken`](DecodeError::UnknownToken), and
+//! [`UnexpectedEos`](DecodeError::UnexpectedEos); and the fuzz targets and
+//! benches under `fuzz/` and `benches/` guard the decoder against regressions.
+//!
+//! [`accept_token`]: DecoderSession::accept_token
 
 pub mod error;
 pub mod grammar;

@@ -26,13 +26,16 @@ before your first change. The short version:
 ## Workflow
 
 ```sh
-mise install && mise run install-cargo-tools   # provision toolchain + dev tools
-just hooks-install                             # wire the git hooks
+mise install && mise run install-cargo-tools   # provision toolchain + dev tools (also wires git hooks)
 just new-feature <name>    # worktree + branch
 just spec <name>           # scaffold a spec, then plan → implement → verify
 # ... make your change ...
 just ci                    # must pass before you open a PR
 ```
+
+`install-cargo-tools` already runs `lefthook install`, so the git hooks are wired
+by onboarding — no separate step. (`just hooks-install` exists only to re-install
+them manually if they ever go missing.)
 
 Then open a PR. In the description:
 

@@ -154,7 +154,7 @@ reviewer red flag.
 ## The domain (EVOLVABLE)
 
 > This section starts empty. It is the authoritative statement of *what this
-> server is and does*. It grows only through specs and reviewer-approved PRs, and
+> decoder is and does*. It grows only through specs and reviewer-approved PRs, and
 > it is the source of truth that `docs/domain-model.md` elaborates.
 
 *(No domain rules yet. The kit ships domain-agnostic. Add the first rule with the

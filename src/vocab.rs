@@ -1,9 +1,13 @@
 //! The model vocabulary: token id → raw bytes.
 //!
-//! A scaffold only at M0 — nothing enumerates it yet. The token trie and the
-//! per-state mask cache that consume it are M2 (see `docs/spec/architecture.md` §4), and
-//! `accept_token(id)` is a later `bytes(id).for_each(accept_byte)` loop once a
-//! host supplies a real vocabulary.
+//! The host supplies this table at the boundary. [`CompiledGrammar`] consumes it
+//! to build its per-state mask cache (M2, see `docs/spec/architecture.md` §4),
+//! and [`DecoderSession::accept_token`] folds `vocab.bytes(id)` through the
+//! byte-PDA one byte at a time. Lookup is a direct index into the token table;
+//! there is no separate trie.
+//!
+//! [`CompiledGrammar`]: crate::CompiledGrammar
+//! [`DecoderSession::accept_token`]: crate::DecoderSession::accept_token
 
 /// An indexed table mapping token ids to their raw bytes, plus the EOS token id.
 #[derive(Debug, Clone)]

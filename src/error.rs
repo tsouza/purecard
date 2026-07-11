@@ -6,15 +6,22 @@
 //! corpus-loader's `CorpusError` stays in the oracle harness (`tests/support/`),
 //! since loading the gold corpus is not decoder API.
 
-/// An error from driving the byte recognizer.
+/// An error from driving the decoder core.
 ///
-/// The one variant, [`DecodeError::DeadState`], carries the full
+/// The byte-level variant, [`DecodeError::DeadState`], carries the full
 /// oracle-tightening tuple: the offset and byte that were rejected, plus the
 /// automaton `state` and `stack_top` at the point of rejection. Those last two
 /// name *why* the byte was rejected, so a soundness failure over the gold corpus
 /// points at the exact production the grammar wrongly forbids (see
 /// `specs/m1-l1-grammar.md`, G4). This is a backward-compatible superset of M0's
 /// `{ offset, byte }`.
+///
+/// The remaining three variants are the token-level channel of
+/// [`accept_token`](crate::DecoderSession::accept_token) (M5): a
+/// [`InadmissibleToken`](DecodeError::InadmissibleToken) — an in-range token the
+/// mask legitimately cleared — a [`UnknownToken`](DecodeError::UnknownToken) for
+/// an out-of-range id (a host-contract violation), and a
+/// [`UnexpectedEos`](DecodeError::UnexpectedEos) for a premature end-of-stream.
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
     /// The recognizer had no valid continuation for `byte` at `offset`.

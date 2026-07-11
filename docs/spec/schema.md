@@ -18,34 +18,38 @@ The minimal per-database structure a schema-aware decoder consults. It is popula
 
 #### 6.2.1 Structure
 
+The structure below is the **JSON contract `Schema::from_json` deserializes** (the serde field names are authoritative — this is what the host must emit):
+
 ```
 Schema {
-  db_id: string
+  db_id:        string
+  db_path:      string                             // the store/database path (REQUIRED). N3 admits it
+                                                    // as a legal pipeline source alongside real classes (6.5)
   classes:      Map<ClassPath, ClassInfo>          // keyed by fully-qualified path
-  associations: List<AssociationSpec>              // navigability derived, see 6.2.3
-  enums:        Map<EnumPath, List<EnumValue>>     // enumeration path -> its literal values
+  associations: List<AssociationSpec>              // optional (default []); navigability derived, see 6.2.3
+  enums:        Map<EnumPath, List<EnumValue>>     // optional (default {}); enumeration path -> its values
 }
 
-ClassInfo {
-  path:                 ClassPath                  // e.g. spider::car_1::model::default::CarMakers
+ClassInfo {                                        // the class path is the Map KEY, not a field
   simple_name:          string                     // "CarMakers" (the .all() head the model emits)
   properties:           List<PropertySpec>         // stored/regular properties, declared order
-  qualified_properties: List<QualifiedPropertySpec>// derived properties (0..* per class)
-  super_types:          List<ClassPath>            // inherited members resolve transitively
+  qualified_properties: List<QualifiedPropertySpec>// derived properties (optional, default [])
+  super_types:          List<ClassPath>            // inherited members resolve transitively (optional, default [])
 }
 
 PropertySpec {
-  name:         string                             // "horsepower"
-  type:         PropType
-  multiplicity: Multiplicity
+  name: string                                     // "horsepower"
+  type: PropType                                   // JSON key is "type"
+  mult: Multiplicity
 }
 
-PropType =
-  | Primitive(PrimName)     // one of the Pure primitives, 6.2.2
-  | ClassRef(ClassPath)     // a complex/class-typed property (navigation continues)
-  | EnumRef(EnumPath)       // an enumeration-typed property
+PropType =                                         // internally tagged on "kind"
+  | { kind: "primitive", name: PrimName }          // one of the Pure primitives, 6.2.2
+  | { kind: "class",     path: ClassPath }         // a complex/class-typed property (navigation continues)
+  | { kind: "enum",      path: EnumPath }          // an enumeration-typed property
 
-Multiplicity { lower: u32, upper: u32 | UNBOUNDED }   // "1"->(1,1) "0..1"->(0,1) "1..*"->(1,UNBOUNDED)
+Multiplicity { lower: u32, upper: u32 | null }     // upper=null is * (unbounded): [1]->{lower:1,upper:1},
+                                                    // 0..1->{0,1}, 1..*->{1,null}
 
 AssociationSpec {
   path: AssociationPath
@@ -54,15 +58,15 @@ AssociationSpec {
 AssociationEnd {
   property_name: string                             // "fk0DefaultContinents"
   target_class:  ClassPath                          // Continents
-  multiplicity:  Multiplicity                       // [1]
+  mult:          Multiplicity                       // [1]
 }
 // NOTE (Pure semantics, verified): an end's property is navigable FROM the class at the OTHER end
-// and yields target_class[multiplicity]. See 6.2.3.
+// and yields target_class[mult]. See 6.2.3.
 
 QualifiedPropertySpec {
-  name:               string                        // "doubled"
-  return_type:        PropType                       // its declared return type
-  return_multiplicity: Multiplicity
+  name:        string                               // "doubled"
+  return_type: PropType                             // its declared return type
+  return_mult: Multiplicity
   // parameter list exists in the PMCD but is not needed for identifier narrowing; a decoder MAY
   // ignore args and treat a qualified property as a nav step yielding return_type (MVP), or narrow
   // its argument positions later. Args are rare in the emitted subset.
@@ -71,7 +75,7 @@ QualifiedPropertySpec {
 EnumValue = string                                  // the enum literal, e.g. "ACTIVE"
 ```
 
-`PropType`'s three-way split (`Primitive` | `ClassRef` | `EnumRef`) is load-bearing: the type determines whether a `.` after this property **continues navigation** (`ClassRef`), **terminates at a value** (`Primitive`), or **narrows a comparison RHS to enum values** (`EnumRef`). A flat `type: str` is insufficient; a decoder MUST split it.
+`PropType`'s three-way split (`kind: "primitive"` | `"class"` | `"enum"`) is load-bearing: the type determines whether a `.` after this property **continues navigation** (`class`), **terminates at a value** (`primitive`), or **narrows a comparison RHS to enum values** (`enum`). A flat `type: str` is insufficient; a decoder MUST split it.
 
 #### 6.2.2 The primitive type set (from the autogen models)
 
@@ -90,8 +94,8 @@ EnumValue = string                                  // the enum literal, e.g. "A
 
 An `AssociationSpec` with ends `[e0, e1]` yields **two directed navigations**:
 
-- from `e0.target_class`, the property **`e1.property_name`** is navigable and yields `e1.target_class` with `e1.multiplicity`;
-- from `e1.target_class`, the property **`e0.property_name`** is navigable and yields `e0.target_class` with `e0.multiplicity`.
+- from `e0.target_class`, the property **`e1.property_name`** is navigable and yields `e1.target_class` with `e1.mult`;
+- from `e1.target_class`, the property **`e0.property_name`** is navigable and yields `e0.target_class` with `e0.mult`.
 
 Concretely, `fk_0 = { fk0DefaultCountries: Countries[1..*], fk0DefaultContinents: Continents[1] }` means: **from a `Countries`** you may navigate `.fk0DefaultContinents` → `Continents[1]`, and **from a `Continents`** you may navigate `.fk0DefaultCountries` → `Countries[1..*]`. This is exactly what the gold query `Countries.all()->filter(x|$x.continent == $x.fk0DefaultContinents.contId)` does. Getting the direction backwards is a soundness bug (it would mask `fk0DefaultContinents` on `Countries`). A decoder therefore precomputes, per class, its **navigable set** = { each opposite-end property }.
 
@@ -122,7 +126,7 @@ L2 maintains a small **scope stack**. The top-of-stack `Scope` determines narrow
 
 #### 6.4.1 Transitions
 
-1. **Source (S1).** On `ClassPath.all()`, the class must exist in `Schema.classes` (rule N3). Set the pipeline scope to `ClassScope(ClassPath, var=None, mult=(1,1))`.
+1. **Source (S1).** On `ClassPath.all()`, the class must exist in `Schema.classes` — or, for the arm-A `Db->tableReference(...)` store source, be the schema's `db_path` (rule N3: `Schema::is_source` accepts a real class key **or** the `db_path`). Set the pipeline scope to `ClassScope(ClassPath, var=None, mult=(1,1))`.
 2. **Lambda entry (S2).** On entering a lambda `var | …` (inside `filter`, and inside each `colLambda`/`keyLambda`/`mapLambda`), bind `var` to the *current pipeline element type*: push `ClassScope(current_class, var, (1,1))`. The bound var is the only in-scope row variable inside the lambda body.
 3. **Navigation entry (S3).** On `$var.` where `$var` is the bound var, the next identifier is narrowed (N1). After it is consumed:
    - if it is a `Primitive`/`EnumRef` property → the nav expression's *resolved type* is that primitive/enum; navigation cannot continue (a further `.` is illegal, N-terminal).
@@ -150,7 +154,7 @@ Position-by-position scope + narrowing:
 
 | Position | Scope before | L2 action |
 |---|---|---|
-| `spider::…::Countries` (source) | — | N3: must be a real class path; it is. Set `ClassScope(Countries,(1,1))`. |
+| `spider::…::Countries` (source) | — | N3: must be a real class path **or** the store `db_path` (`Schema::is_source`); here it is a class. Set `ClassScope(Countries,(1,1))`. |
 | `.all()` | ClassScope(Countries) | pipeline element type = `Countries`. |
 | `filter(x\|` | ClassScope(Countries) | S2: bind `x`→`Countries`. |
 | `$x.` → `continent` | ClassScope(Countries, x) | N1: `continent` ∈ Countries.properties `{countryId, countryName, continent}` ✓; type `Integer[0..1]` (numeric). |
@@ -170,7 +174,7 @@ Each rule = "at this position, intersect L1's terminal set with this schema-lega
 
 - **N1 — property/first-navigation narrowing.** At `$var.<IDENT>` where `$var` is bound to `ClassScope(C)`: legal `<IDENT>` = `C.properties[*].name` ∪ `C.qualified_properties[*].name` ∪ `navigable(C)` (the opposite-end property names of every association touching `C`, per §6.2.3) ∪ the same three sets for every class in `C.super_types` (transitively). Nothing else.
 - **N2 — chained-navigation narrowing.** After a ClassRef/association step advanced the scope to target class `T`, a further `.<IDENT>` narrows to `T`'s member set (N1 computed for `T`).
-- **N3 — source-class narrowing.** At the `classpath` before `.all()`, the fully-qualified path must be a key of `Schema.classes`. (Phantom-class prevention; catches `test::DoesNotExist.all()`.)
+- **N3 — source-class narrowing.** At the pipeline-source `classpath`, the fully-qualified path must be a key of `Schema.classes` **or** the schema's `db_path` (the store, which arm-A relational queries name as their `tableReference` source). (Phantom-class prevention; catches `test::DoesNotExist.all()`.)
 - **N4 — enum-value narrowing.** When a nav expression resolves to `EnumRef(E)` and is compared (`== / !=`), the RHS enum literal `E.value` (or `EnumPath.value` form) is narrowed to `Schema.enums[E]`. Nothing outside that enum's declared values. **Forward-looking / not in the current corpus:** no gold query in the Spider-derived corpus compares a schema enum, so the emitted L1 grammar carries **no** enum-literal *operand* production yet (§5.5, §7 N4 mark this reserved). N4 becomes active the moment L1 adds that operand (`enumLit = classpath "." ident`) on the first gold enum comparison. (`SortDirection.ASC/DESC`, the only enum-shaped literal in the corpus, is a Pure builtin inside `sort` — **not** a schema enum and **not** an N4 position.)
 - **N5 — association navigability direction.** A navigation property is legal from `C` only if it is the *opposite* end of an association whose other end targets `C` (§6.2.3). This prevents emitting a navigation from the wrong side of the association.
 - **N6 — relation-column narrowing.** In `RelationScope(cols)`, every reference to an emitted column name must be a member of `cols` (the names emitted by the preceding `project`/`groupBy`/`olapGroupBy`). Four reference positions occur in the corpus and are all narrowed: (a) a `sort('<COL>', …)` / `asc('<COL>')` / `desc('<COL>')` column string; (b) any `restrict([...])` or later `project` name-reference; (c) the **TDS-column accessor** `$r.get{Integer,Float,String,Boolean}('<COL>')` — the post-aggregate HAVING read (`->filter(r|$r.getInteger('cnt') >= 2)`), which is the single most common relation-column reference (340+ gold occurrences); and (d) the trailing column `<IDENT>` in the `->in(subquery.<IDENT>)` membership form (47 gold), narrowed against the **subquery pipeline's own terminal `RelationScope`** — the subquery is entered as an independent scope (§6.4), so its projected column universe, not the outer pipeline's, is the legal set. This keeps post-projection column references real. (Weaker than N1–N5: column names are string-literals, so this is enforced only where the model references a *previously emitted* name; it is the relation-side analogue of property narrowing. The `getX` accessor additionally fixes the *type* of the read — `getInteger` on a numeric column — which L2 MAY check against the aggregate's output type, but the compiler oracle also catches a `getString` on a numeric column, so this is an optional tightening.)
@@ -187,7 +191,9 @@ Each rule = "at this position, intersect L1's terminal set with this schema-lega
 
 ### 6.7 Rule count
 
-6 scope-transition rules (S1/source, S2/lambda-bind, S3/nav-advance, plus project/groupBy/agg/sort re-typing consolidated) + **6 narrowing rules (N1–N6)** + **7 type rules (T1–T7)** = **13 narrowing/type constraint rules**, over the scope state machine of §6.4. The 13 N/T rules are the maskable, per-position constraints an implementation enforces; the scope machine is the state they read.
+This section is the **full design surface**. The scope state machine of §6.4 is **6 scope-transition rules** (S1/source, S2/lambda-bind, S3/nav-advance, plus project/groupBy/agg/sort re-typing, consolidated); riding on it are the **13 narrowing/type constraint rules** — **6 narrowing (N1–N6)** + **7 type (T1–T7)**, i.e. 6 + 7 = 13. The scope transitions are the state every constraint reads, **not** constraint rules themselves; that is why the constraint count is 13 (the narrowing + type rules), not 6 + 6 + 7 = 19. This §6.7 total is the design surface, distinct from the narrower M3-shipped subset enumerated below.
+
+**Shipped in M3 (a corpus-driven subset):** the overlay builds a constraining mask for **N3** (source-class / store narrowing), **N1/N2** (property + chained-navigation narrowing), **N6** (relation-column narrowing), and **T1** (comparison operand-type compatibility, numeric/string operands; boolean/temporal operand narrowing deferred). **Association-direction narrowing (N5) also ships** — not as a standalone rule but folded into N1: `Schema::member_names`/`resolve` admit only the *navigable* (correct-direction) association ends, so a wrong-direction navigation is already masked by N1's member set. Genuinely deferred — passing through unconstrained today — are **N4/T5** (enum comparison, gated on an L1 `enumLit` operand no gold query yet emits, §6.5 N4) and **T2/T3/T4/T6/T7** (comparator/reducer/string-predicate/multiplicity-collapse/projection-shape), to be activated as the corpus grows (see the M3 spec and `docs/decisions/`). The scope machine of §6.4 is the state every rule reads; `src/schema/narrow.rs` is authoritative for which rules currently constrain.
 
 ---
 

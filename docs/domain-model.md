@@ -39,19 +39,25 @@ the question's intent).
 **Relationships.** Every other entity exists to move a model's output up this
 hierarchy: the grammar/PDA delivers L1; the schema overlay delivers L2.
 
-**Introduced by.** [`spec/overview.md`](spec/overview.md) §1. *(Skeleton — the entities below are specified in
-the spec and land across milestones M0–M4; they are recorded here as the target
-model, not as shipped code.)*
+**Introduced by.** [`spec/overview.md`](spec/overview.md) §1. *(The entities below
+are shipped: all milestones M0–M5 are merged, so each entry describes the decoder
+as built — `src/` is authoritative where a detail is load-bearing.)*
 
 ### Vocab
 
-**What it is.** The model vocabulary as raw byte strings per token id, plus a byte
-trie. A token is admissible iff feeding its raw bytes advances the byte-level
-automaton to a non-dead state — sidestepping subword-boundary alignment entirely.
+**What it is.** The model vocabulary as raw byte strings per token id, indexed
+directly by token id — there is **no** trie (`src/vocab.rs`: `bytes(id)` is a
+direct table index; per-state acceptance is resolved by probing the byte-level PDA
+on first visit to a state, not by a trie walk). A token is admissible iff feeding
+its raw bytes advances the byte-level automaton to a non-dead state. This avoids a
+trie traversal, but it does **not** eliminate host tokenizer/vocabulary alignment
+risk: the host must still supply each token's exact bytes (the §11 tokenizer-exactness
+concern), and neither the byte-level replay nor the M5 self-check proves token-id
+soundness — that is exercised only live in the M4 e2e lane.
 
 **Introduced by.** [`spec/architecture.md`](spec/architecture.md) §4.1, §4.4, §9.1.
 
-### PureGrammar / CompiledGrammar
+### CompiledGrammar
 
 **What it is.** The L1 context-free skeleton of the *emitted subset* of Pure
 (class-anchored relation pipelines), compiled into a pushdown automaton with
@@ -88,11 +94,15 @@ of the scope stack determines which identifiers L2 admits.
 **Shipped (M3).** `Schema::from_json` + `DecoderSession::with_schema` deliver L2 as
 `src/schema/{model, scope, narrow}`. The scope machine (`ScopeTracker`) advances in
 lockstep with `accept_token`, and `allowed_mask` intersects the L1 mask with the
-schema-legal set. The shipped rules are N3 (source-class exists), N1/N2 (member/nav
-after `.`), N6 (relation-column strings), and T1 (comparison operand type-class —
-only its string/numeric levers; Boolean/Temporal operand narrowing passes through);
-N5-as-a-distinct-rule, T2/T3/T4/T6/T7, and the inert N4/T5 are deferred (see the
-module docs and `specs/m3-schema-overlay.md`). Soundness holds on all 269
+schema-legal set. The shipped rules are N3 (source is a real class **or** the store
+`db_path`, per `Schema::is_source`), N1/N2 (member/nav after `.`), **N5**
+(association-direction narrowing — it ships folded into N1, since
+`Schema::member_names`/`resolve` admit only the navigable, correct-direction
+association ends, so a wrong-direction navigation is already masked by N1's member
+set), N6 (relation-column strings), and T1 (comparison operand type-class — only
+its string/numeric levers; Boolean/Temporal operand narrowing passes through);
+deferred are T2/T3/T4/T6/T7 and the inert N4/T5 (see the module docs and
+`specs/m3-schema-overlay.md`). Soundness holds on all 269
 fixture-backed gold queries; the load-bearing narrowing surface is the 13 arm-C
 queries (arm-A exercises only N6 + a table-exists check).
 
@@ -139,8 +149,10 @@ zero core dependencies.
 
 ### Compile a grammar (once per model + grammar)
 
-`PureGrammar::from_spec` → `compile(vocab)` builds the PDA and lazy per-state mask
-caches. [`spec/architecture.md`](spec/architecture.md) §4.5, §9.1.
+`CompiledGrammar::compile(vocab)` (or the stub `from_spec(spec, vocab)`) binds the
+vocab and **sizes** the lazy per-state mask cache — it probes no token up front;
+each state's partition is built on first visit (`cached(state)`).
+[`spec/architecture.md`](spec/architecture.md) §4.5, §9.1.
 
 ### Constrain one generation (per decode step)
 

@@ -45,11 +45,17 @@ A per-state mask cache keeps mask generation off the critical path.
 
 ## Status
 
-Milestone **M0** (skeleton). The decoder lands across the milestones tracked in
-[`docs/spec/overview.md`](docs/spec/overview.md) §10:
+All milestones **M0–M5** are shipped; the decoder is feature-complete. The
+milestone arc tracked in [`docs/spec/overview.md`](docs/spec/overview.md) §10 is
+delivered end to end:
 
 - **M0** oracle harness · **M1** L1 grammar · **M2** performance ·
   **M3** L2 schema overlay · **M4** PyO3 boundary · **M5** hardening.
+
+That means the L1 syntactic recognizer and the L2 schema-consistency overlay, the
+per-state mask cache, the feature-gated PyO3 boundary, and the hardening pass
+(tokenizer self-check, EOS finalization, the split `DecodeError`, fuzz targets,
+and benches) are all in `main`.
 
 The soundness backbone — replaying the committed gold corpus through the decoder
 — runs fully offline, with no Legend engine required.
@@ -70,7 +76,8 @@ The soundness backbone — replaying the committed gold corpus through the decod
 PureCard is the Rust half of a Rust/Python split. Python owns training, datagen,
 and the inference loop; PureCard exposes itself through a thin **PyO3** boundary
 (a maturin wheel) that constrains only the final-query span of a trajectory. That
-boundary arrives at M4.
+boundary landed in M4 — see [`src/ffi.rs`](src/ffi.rs), the `python` Cargo
+feature, and the maturin wheel build.
 
 ## Development
 

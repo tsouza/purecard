@@ -5,10 +5,11 @@ constrained-decoding library).**
 
 - **OSS project name:** `PureCard` — _Pure_ + _PICARD_ lineage; reads as the
   "reference **card** of legal moves" for Pure generation.
-- **Crate / repo:** `purecard` (internal Rust module name in this spec:
-  `picard_pure`; the two names are interchangeable — the published crate is
-  `purecard`).
-- **Status:** Design, ready for implementation.
+- **Crate / repo:** `purecard` — the crate is named `purecard` everywhere (the
+  `#[pymodule]` is `purecard`, the lib is `purecard`); there is no `picard_pure`
+  identifier in the code.
+- **Status:** Implemented — all milestones M0–M5 are shipped; this spec is the
+  authoritative design the shipped decoder tracks.
 
 Together the files below are the _complete specification of the decoder_: a
 fresh engineer (or a fresh Claude instance) can build the PureCard crate from

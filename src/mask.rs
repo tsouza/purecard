@@ -4,7 +4,7 @@
 //! living in word `id / 64` at position `id % 64`. It is deliberately *not* a
 //! `bitvec`/`roaring` dependency — a word-wise newtype is a few dozen lines, needs
 //! no vetting rubric, and keeps the published core's `[dependencies]` at
-//! `⊆ { thiserror }` (constitution §1, `check-core-deplight`).
+//! `⊆ { thiserror, serde, serde_json }` (constitution §1, `check-core-deplight`).
 //!
 //! The mask spans `V + 1` bits over a `V`-token vocabulary: bit `V` is the
 //! reserved **EOS** bit (architecture Decision D3), a canonical completeness

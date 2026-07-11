@@ -145,8 +145,10 @@ deny:
 machete:
     cargo machete
 
-# Assert the published core stays dep-light and harness-free (ADR-0003): empty
-# `[dependencies]` + no tests/ or corpus/ paths in `cargo package --list`.
+# Assert the published core stays dep-light and harness-free: its `[dependencies]`
+# table holds only the allowlisted runtime deps `{ thiserror, serde, serde_json }`
+# (ADR-0005 records the current membership; ADR-0003 established the harness-free
+# rule) + no tests/ or corpus/ paths in `cargo package --list`.
 # Delegates the parse + packaging check to xtask.
 check-core-deplight:
     cargo xtask check-core-deplight
