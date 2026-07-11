@@ -1,12 +1,30 @@
 # PureCard specification
 
-The complete, self-contained build spec for **PureCard** — a byte-level
-grammar- and schema-constrained decoder for Legend Pure. It is the authoritative
-source that [`../domain-model.md`](../domain-model.md) navigates and elaborates.
+**A Rust grammar/schema-constrained decoder for Legend Pure (a "PICARD-for-Pure"
+constrained-decoding library).**
 
-The spec was one monolith; it is split here by concern. Section numbers (`§N`)
-are preserved verbatim as headings, so any `§N` reference resolves to the file
-below.
+- **OSS project name:** `PureCard` — _Pure_ + _PICARD_ lineage; reads as the
+  "reference **card** of legal moves" for Pure generation.
+- **Crate / repo:** `purecard` (internal Rust module name in this spec:
+  `picard_pure`; the two names are interchangeable — the published crate is
+  `purecard`).
+- **Status:** Design, ready for implementation.
+
+Together the files below are the _complete_ build spec: a fresh engineer (or a
+fresh Claude instance) can build PureCard end-to-end from them alone — no other
+design docs. The only external things the reader must fetch are (a) the _test
+corpus_ of gold Pure queries and (b) a running _Legend engine_ — both are
+data/services, not prose, with locations given in [`testing.md`](testing.md) §8.
+General Rust workspace conventions, CI, and agentic dev setup are out of scope.
+
+Context in one line: an upstream project ("pure-lingua") trains an LLM to emit
+Legend Pure queries; at single-shot serving we want _guaranteed-valid_ output in
+one forward pass (no compile-repair round-trip). PureCard provides that guarantee
+via constrained decoding. This spec is the authoritative source that
+[`../domain-model.md`](../domain-model.md) navigates and elaborates.
+
+Section numbers (`§N`) are preserved verbatim as headings, so any `§N` reference
+resolves to the file below.
 
 | Sections                          | File                               | Covers                                                                                 |
 | --------------------------------- | ---------------------------------- | -------------------------------------------------------------------------------------- |

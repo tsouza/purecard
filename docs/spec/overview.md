@@ -2,18 +2,10 @@
 
 _[Spec index](README.md) · [domain model](../domain-model.md)_
 
-**A Rust grammar/schema-constrained decoder for Legend Pure (a "PICARD-for-Pure" constrained-decoding library).**
-
-- **OSS project name:** `PureCard` — _Pure_ + _PICARD_ lineage; reads as the "reference **card** of legal moves" for Pure generation.
-- **Crate / repo:** `purecard` (internal Rust module name in this spec: `picard_pure`; the two names are interchangeable — the published crate is `purecard`).
-- **Status:** Design, ready for implementation.
-- **What this spec is:** the _complete_ build spec for the constrained-decoder component, split by concern across [`docs/spec/`](README.md) (this file plus `architecture.md`, `grammar.md`, `schema.md`, `testing.md`). Together they let a fresh engineer (or a fresh Claude instance) build PureCard end-to-end from the spec alone — no other design docs. All grammar rules (`grammar.md`), schema-consistency rules (`schema.md`), the masking algorithm and API surface (`architecture.md`), and the build milestones (below) are inlined in full. The only external things the reader must fetch are (a) the _test corpus_ of gold Pure queries and (b) a running _Legend engine_ — both are data/services, not prose, and their locations are given in [`testing.md`](testing.md) §8.
-
-General Rust workspace conventions, CI, and agentic dev setup are out of scope; this document is laser-focused on the PICARD-to-Pure domain: what to build, the algorithm, the Pure grammar, the schema-consistency layer, the correctness oracle, the integration boundary, and the build milestones.
-
-Project context in one line: an upstream project ("pure-lingua") trains an LLM to emit Legend Pure queries; at single-shot serving we want _guaranteed-valid_ output in one forward pass (no compile-repair round-trip). PureCard provides that guarantee via constrained decoding.
-
----
+This file covers the interface and guarantee boundary (§1), scope and non-goals
+(§2), the build milestones (§10), risks (§11), the roadmap (§12), and prior art
+(Appendix B). The grammar, schema, architecture, and testing rules live in the
+other [`docs/spec/`](README.md) files — see the [index](README.md) to route.
 
 ## 1. What PureCard is — the interface and the guarantee boundary
 
