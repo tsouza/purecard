@@ -15,14 +15,14 @@
 //!
 //! ## Status
 //!
-//! Milestone **M1** (L1 byte-PDA grammar), in progress. The shippable core is
-//! the [`GuaranteeLevel`] lattice, the [`vocab`] module's [`Vocab`] table
-//! (token id → raw bytes), and the decoder plumbing the byte-PDA is built on:
-//! the [`DecodeError`] reported when a stream dead-ends and the
-//! [`ByteRecognizer`] contract the automaton implements. The concrete PDA lands
-//! on top of this plumbing in a later task. The gold-corpus loader and the
-//! Legend completeness probe remain test-oracle scaffolding under `tests/`, not
-//! in the published crate (see
+//! Milestone **M1** (L1 byte-PDA grammar). The shippable core is the
+//! [`GuaranteeLevel`] lattice, the [`vocab`] module's [`Vocab`] table (token id →
+//! raw bytes), and the byte-level recogniser: the [`grammar`] module's hand-written
+//! pushdown automaton ([`Pda`]) over the emitted-Pure grammar (§5), the
+//! [`DecoderSession`] that drives it as a [`ByteRecognizer`], and the
+//! [`DecodeError`] it reports when a stream dead-ends. The gold-corpus loader and
+//! the Legend completeness probe remain test-oracle scaffolding under `tests/`,
+//! not in the published crate (see
 //! `docs/decisions/0003-non-core-in-tests-deplight-core.md`), so the core's only
 //! runtime dependency is `thiserror` for its error types.
 //!
@@ -30,11 +30,16 @@
 //! in later milestones.
 
 pub mod error;
+pub mod grammar;
 pub mod recognizer;
+pub mod session;
 pub mod vocab;
 
 pub use error::DecodeError;
+pub use grammar::Envelope;
+pub use grammar::pda::Pda;
 pub use recognizer::ByteRecognizer;
+pub use session::DecoderSession;
 pub use vocab::Vocab;
 
 /// The nested guarantee levels a constrained decoder can offer, ordered from
