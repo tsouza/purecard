@@ -180,95 +180,31 @@ pub fn self_check_smoke(grammar: &CompiledGrammar) -> Result<(), SelfCheckError>
     self_check(grammar, SMOKE)
 }
 
+// The lexeme tokenizer has a single home in `tests/support/lex.rs` (constitution
+// §4, DRY): the L2 lanes, the criterion bench, and the self-check corpus lane all
+// `#[path]`-include that one file. These unit tests reuse it too, rather than carry
+// a second, drift-prone copy. It stays test-only scaffolding — the shipped core has
+// no model tokenizer (the host supplies token → bytes), so it cannot move into a
+// shipped `src/` module without leaking a lexer into the pure core's public surface.
+// The core's own byte-segmentation (`longest_match`) is a distinct algorithm — vocab
+// longest-match, not lexeme tokenization — and stays in this file.
+#[cfg(test)]
+#[path = "../tests/support/lex.rs"]
+mod lex_support;
+
 #[cfg(test)]
 mod tests {
     use super::{SMOKE, SelfCheckError, longest_match, self_check, self_check_smoke};
     use crate::grammar::compiled::CompiledGrammar;
     use crate::vocab::Vocab;
 
-    /// Partition `text` into lexeme tokens, byte-exactly (concatenation equals the
-    /// input). A minimal lexer sufficient for the smoke shapes: whitespace runs,
-    /// two-byte operators, strings, dates, numbers, `::`-joined idents, and single
-    /// structural bytes each become one token.
+    /// Lexeme-tokenize `text` via the canonical [`lex_support::lex`](super::lex_support::lex).
+    /// The self-check samples are all valid UTF-8, so the byte slice round-trips
+    /// through `str`.
     fn lex(text: &[u8]) -> Vec<Vec<u8>> {
-        let mut tokens = Vec::new();
-        let mut i = 0;
-        while i < text.len() {
-            let start = i;
-            let b = text[i];
-            if b.is_ascii_whitespace() {
-                while i < text.len() && text[i].is_ascii_whitespace() {
-                    i += 1;
-                }
-            } else if two_byte_op(text, i) {
-                i += 2;
-            } else if b == b'\'' {
-                i += 1;
-                while i < text.len() && text[i] != b'\'' {
-                    i += 1;
-                }
-                i = (i + 1).min(text.len()); // closing quote
-            } else if b == b'%' {
-                i += 1;
-                while i < text.len() && is_date_char(text[i]) {
-                    i += 1;
-                }
-            } else if b.is_ascii_digit() || (b == b'-' && next_is_digit(text, i)) {
-                i += 1;
-                while i < text.len() && (text[i].is_ascii_digit() || text[i] == b'.') {
-                    i += 1;
-                }
-            } else if is_ident_start(b) {
-                i = scan_ident(text, i);
-            } else {
-                i += 1;
-            }
-            tokens.push(text[start..i].to_vec());
-        }
-        tokens
-    }
-
-    fn two_byte_op(bytes: &[u8], i: usize) -> bool {
-        matches!(
-            (bytes.get(i), bytes.get(i + 1)),
-            (Some(b'-'), Some(b'>'))
-                | (Some(b'='), Some(b'='))
-                | (Some(b'!'), Some(b'='))
-                | (Some(b'<'), Some(b'='))
-                | (Some(b'>'), Some(b'='))
-                | (Some(b'&'), Some(b'&'))
-                | (Some(b'|'), Some(b'|'))
+        super::lex_support::lex(
+            std::str::from_utf8(text).expect("self-check samples are valid UTF-8"),
         )
-    }
-
-    fn next_is_digit(bytes: &[u8], i: usize) -> bool {
-        bytes.get(i + 1).is_some_and(u8::is_ascii_digit)
-    }
-
-    fn scan_ident(bytes: &[u8], mut i: usize) -> usize {
-        while i < bytes.len() {
-            if is_ident_tail(bytes[i]) {
-                i += 1;
-            } else if bytes[i] == b':'
-                && bytes.get(i + 1) == Some(&b':')
-                && bytes.get(i + 2).is_some_and(|&b| is_ident_start(b))
-            {
-                i += 3;
-            } else {
-                break;
-            }
-        }
-        i
-    }
-
-    fn is_ident_start(b: u8) -> bool {
-        b.is_ascii_alphabetic() || b == b'_'
-    }
-    fn is_ident_tail(b: u8) -> bool {
-        b.is_ascii_alphanumeric() || b == b'_'
-    }
-    fn is_date_char(b: u8) -> bool {
-        b.is_ascii_digit() || matches!(b, b'-' | b'T' | b':')
     }
 
     /// Build a faithful `Vocab` from the lexemes of `queries`, mapped to dense

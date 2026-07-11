@@ -94,7 +94,7 @@ For L2, additionally **cache per-(state, class-scope) identifier masks**: the se
 
 ### 4.6 Shipped M5 baseline (the locked performance record)
 
-The criterion suite (`benches/allowed_mask.rs`) locks the shipped per-step baseline; the **enforced** regression guard is CodSpeed (the `bench` job — deterministic *instruction count*, walltime-independent, so it reproduces faithfully in CI). Wall-clock figures below are representative and machine-dependent — indicative shape, not the gate; CodSpeed's instruction-count delta is what fails a PR. Recommended CodSpeed threshold at first-lock: **±10 %** instruction count, ratcheted tighter over time (a PROTECTED gate only tightens). CodSpeed stays opt-in until the app is installed and `CODSPEED_ENABLED=true` is set.
+The criterion suite (`benches/allowed_mask.rs`) locks the shipped per-step baseline. The intended regression guard is CodSpeed (the `bench` job — deterministic *instruction count*, walltime-independent, so it reproduces faithfully in CI), but it is **opt-in, not yet an enforced merge check**: the `bench` job is gated behind `vars.CODSPEED_ENABLED == 'true'`, so until the CodSpeed app is installed and that variable is set, it posts perf deltas without blocking a PR. Once enabled, CodSpeed's instruction-count delta is what fails a PR; the wall-clock figures below are always representative and machine-dependent — indicative shape, never the gate. Recommended CodSpeed threshold at first-lock: **±10 %** instruction count, ratcheted tighter over time (a PROTECTED gate only tightens).
 
 The families and what they establish:
 
