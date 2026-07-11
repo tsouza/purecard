@@ -4,7 +4,7 @@
 # (`maturin build --release --features python`) and the `wheels.yml` CI lane both
 # read it. The default `cargo` build ignores this file entirely.
 [build-system]
-requires = ["maturin>=1.14,<2.0"]
+requires = ["maturin==1.14.1"]
 build-backend = "maturin"
 
 [project]

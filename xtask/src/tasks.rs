@@ -464,27 +464,41 @@ const fn is_key_byte(byte: u8) -> bool {
 /// (`optional = false` reads as not-a-flag). Comment stripping happens in the
 /// caller, so a `# optional = true` cannot fake-skip a real dependency.
 fn toml_flag_is_true(line: &str, flag: &str) -> bool {
+    // Match `flag = true` only as a bare key OUTSIDE any quoted string. Comments
+    // are stripped first, and quotes are tracked as in `strip_toml_comment`, so a
+    // crafted value like `features = ["optional = true"]` cannot spoof the gate
+    // (anti-gaming, constitution §7).
+    let line = strip_toml_comment(line);
     let bytes = line.as_bytes();
-    let mut from = 0usize;
-    while let Some(rel) = line[from..].find(flag) {
-        let start = from + rel;
-        let end = start + flag.len();
-        let key_start = start == 0 || !is_key_byte(bytes[start - 1]);
-        let key_end = end >= bytes.len() || !is_key_byte(bytes[end]);
-        if key_start
-            && key_end
-            && let Some(value) = line[end..].trim_start().strip_prefix('=')
-        {
-            let token: String = value
-                .trim_start()
-                .chars()
-                .take_while(char::is_ascii_alphanumeric)
-                .collect();
-            if token == "true" {
-                return true;
+    let mut quote: Option<u8> = None;
+    let mut idx = 0usize;
+    while idx < bytes.len() {
+        let byte = bytes[idx];
+        match quote {
+            Some(open) if byte == open => quote = None,
+            Some(_) => {}
+            None if byte == b'"' || byte == b'\'' => quote = Some(byte),
+            None if line[idx..].starts_with(flag) => {
+                let end = idx + flag.len();
+                let key_start = idx == 0 || !is_key_byte(bytes[idx - 1]);
+                let key_end = end >= bytes.len() || !is_key_byte(bytes[end]);
+                if key_start
+                    && key_end
+                    && let Some(value) = line[end..].trim_start().strip_prefix('=')
+                {
+                    let token: String = value
+                        .trim_start()
+                        .chars()
+                        .take_while(char::is_ascii_alphanumeric)
+                        .collect();
+                    if token == "true" {
+                        return true;
+                    }
+                }
             }
+            None => {}
         }
-        from = end;
+        idx += 1;
     }
     false
 }
@@ -930,6 +944,18 @@ tokio = { version = \"1\", optional = false }
 
         // A longer key containing `optional` is not the flag.
         assert!(!toml_flag_is_true("optionally = true", "optional"));
+        // A quoted string cannot spoof the flag: `optional = true` inside a value
+        // (e.g. a features array) must not skip the dep past the allowlist (§7).
+        assert!(!toml_flag_is_true(
+            "tokio = { version = \"1\", features = [\"optional = true\"] }",
+            "optional"
+        ));
+        assert!(!toml_flag_is_true("name = \"optional = true\"", "optional"));
+        // A genuine bare key still reads true.
+        assert!(toml_flag_is_true(
+            "pyo3 = { version = \"0.29\", optional = true }",
+            "optional"
+        ));
         // A commented flag cannot skip a dep: the caller strips comments first, so
         // the live line the gate sees has no `optional = true`.
         let commented = "\

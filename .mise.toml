@@ -42,7 +42,7 @@ maturin = "1.14.1"
 # CPython for the hermetic Python test lane and to satisfy pyo3's build script
 # when the `python` feature is compiled (clippy/docs run `--all-features`). abi3
 # wheels are interpreter-independent at runtime; this pin is the build/test host.
-python = "3.12"
+python = "3.12.13"
 
 [env]
 # Keep cargo output deterministic in CI logs.
