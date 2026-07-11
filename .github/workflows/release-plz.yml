@@ -21,7 +21,7 @@ jobs:
     name: release-plz
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -30,7 +30,7 @@ jobs:
       # A second `rustup default` from the action would fight the file over which
       # pin wins (see the same note in ci.yml).
       - name: Run release-plz
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # `purecard` publishes to crates.io on release; release-plz runs

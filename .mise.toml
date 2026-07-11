@@ -21,6 +21,10 @@ just = "1.55.1"
 # Structural search/lint used by the hygiene sweep.
 "ast-grep" = "0.44.1"
 
+# GitHub Actions static analysis (SHA-pinning + security). Same CLI the lint.yml
+# zizmor gate runs, pinned so local (`just zizmor`), agent, and CI agree.
+zizmor = "1.26.1"
+
 # Secret scanning (hook + CI).
 gitleaks = "8.30.1"
 

@@ -49,6 +49,13 @@ lint-commits:
 lint-actions:
     actionlint
 
+# Static-analyze GitHub Actions workflows for security issues (SHA-pinned
+# `uses:`, template injection, over-broad permissions, …) — the same audit the
+# lint.yml `zizmor` CI gate enforces. Reads .github/zizmor.yml (accepted-finding
+# ignores). Online audits are skipped locally without a GitHub token.
+zizmor:
+    zizmor .github/
+
 # ---------------------------------------------------------------------------
 # Testing (layered: unit -> integration -> chaos -> mutation -> fuzz)
 # ---------------------------------------------------------------------------

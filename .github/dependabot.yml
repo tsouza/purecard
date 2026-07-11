@@ -11,6 +11,12 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Observation window: hold a freshly-published version for a week before
+    # opening a version-update PR, so it has time to age (and be yanked upstream)
+    # before adoption. Not a guarantee, and not applied to security updates
+    # (zizmor dependabot-cooldown; complements the SHA pinning).
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       cargo-minor-patch:
@@ -24,6 +30,8 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
     groups:
       actions:
         update-types:
