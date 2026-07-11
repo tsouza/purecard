@@ -21,31 +21,57 @@
 //! type, a removed constructor, or a changed receiver breaks the build.
 //!
 //! ```
-//! use purecard::{CompiledGrammar, DecoderSession, Schema, Vocab, self_check_smoke};
+//! use purecard::{
+//!     CompiledGrammar, DecoderSession, Schema, SelfCheckError, Vocab, self_check_smoke,
+//! };
 //!
-//! // The host supplies the model vocabulary (token id → raw bytes) and the
-//! // reserved EOS id; `from_spec` compiles the emitted-Pure grammar for it.
-//! let vocab = Vocab::from_byte_tokens(vec![b"filter".to_vec()], 1);
+//! // `self_check_smoke` round-trips the embedded gold-shaped queries through a
+//! // host `Vocab`, proving it can *express* them. A toy vocab that cannot even
+//! // segment the first query's opening byte fails loud with a locatable drift
+//! // error — asserted, not ignored, so a change to the self-check contract (or a
+//! // silently-passing smoke check) breaks this example.
+//! let toy = Vocab::from_byte_tokens(vec![b"filter".to_vec()], 1);
+//! let toy_grammar = CompiledGrammar::from_spec("", toy);
+//! assert_eq!(
+//!     self_check_smoke(&toy_grammar),
+//!     Err(SelfCheckError::Unsegmentable { query_index: 0, pos: 0 }),
+//! );
+//!
+//! // A host vocabulary of whole tokens (token id → raw bytes) that expresses the
+//! // query `|X.all()->take(1)`; `from_spec` compiles the emitted-Pure grammar.
+//! let vocab = Vocab::from_byte_tokens(
+//!     vec![
+//!         b"|X.all()".to_vec(), // 0: a complete source expression
+//!         b"->take(".to_vec(),  // 1: a step opening a call
+//!         b"1".to_vec(),        // 2: an integer literal
+//!         b")".to_vec(),        // 3: the closer
+//!     ],
+//!     4,
+//! );
 //! let grammar = CompiledGrammar::from_spec("", vocab);
 //!
-//! // A zero-argument startup smoke check over the embedded gold-shaped queries.
-//! let _ = self_check_smoke(&grammar).is_ok();
-//!
-//! // L1 (syntactic) session: build the mask, offer a token, query completion.
+//! // L1 (syntactic) session: the source token is admissible from the start; once
+//! // accepted it is itself a complete query, and opening a call re-opens the stream.
 //! let mut plain = DecoderSession::new(&grammar);
-//! let _mask = plain.allowed_mask();              // `&mut self`
-//! let _ = plain.accept_token(0);                 // `Result<(), DecodeError>`
-//! let _done: bool = plain.is_complete();
+//! assert!(plain.allowed_mask().test(0), "the source token is admissible at Start");
+//! plain.accept_token(0)?;                        // `Result<(), DecodeError>`
+//! assert!(plain.is_complete(), "`|X.all()` is itself a complete query");
+//! plain.accept_token(1)?;                        // open `->take(`
+//! assert!(!plain.is_complete(), "an open call is not complete");
+//! plain.accept_token(2)?;                        // `1`
+//! plain.accept_token(3)?;                        // `)`
+//! assert!(plain.is_complete(), "the closed `|X.all()->take(1)` is complete");
 //! plain.reset();
+//! assert!(!plain.is_complete(), "reset returns to a fresh, incomplete stream");
 //!
 //! // L2 (schema-consistent) session: the mask is additionally narrowed to the
-//! // schema-legal terminals at each identifier/operand position.
+//! // schema-legal terminals at each identifier/operand position. L2 only ever
+//! // *narrows*, so the same source token still survives and the stream completes.
 //! let schema = Schema::from_json(r#"{"db_id": "d", "db_path": "model::Db", "classes": {}}"#)?;
 //! let mut sess = DecoderSession::with_schema(&grammar, schema);
-//! let _mask = sess.allowed_mask();
-//! let _ = sess.accept_token(0);
-//! let _done: bool = sess.is_complete();
-//! sess.reset();
+//! assert!(sess.allowed_mask().test(0), "L2 only narrows; the L1 source token survives");
+//! sess.accept_token(0)?;
+//! assert!(sess.is_complete());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!

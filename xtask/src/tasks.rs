@@ -1034,16 +1034,23 @@ fn allowlist_sets(text: &str) -> Vec<Vec<String>> {
     let mut from = 0;
     while let Some(rel) = text[from..].find('{') {
         let open = from + rel;
+        // An unmatched `{` (no `}` in the rest of the doc) is a stray prose brace,
+        // not a set: step past just it and keep scanning, so a genuine set later in
+        // the same doc is still evaluated — never abandon the rest of the file.
         let Some(rel_close) = text[open + 1..].find('}') else {
-            break;
+            from = open + 1;
+            continue;
         };
         let inner = &text[open + 1..open + 1 + rel_close];
-        from = open + 1 + rel_close + 1;
         // A crate set is short; a longer span is prose that merely happens to
-        // pair `{` with a distant `}`, so it is not an enumeration.
+        // pair `{` with a distant `}`. Resume just past this `{` — not past the
+        // far `}` — so a genuine `{ … }` nested inside that prose is still reached
+        // instead of being swallowed with the whole span.
         if inner.len() >= MAX_ALLOWLIST_BRACE_LEN {
+            from = open + 1;
             continue;
         }
+        from = open + 1 + rel_close + 1;
         if !(inner.contains("thiserror") && inner.contains("serde")) {
             continue;
         }
@@ -1176,6 +1183,29 @@ intro\n\n### 3.2 Crate layout\n\n```\npurecard/\n  vocab.rs   the vocab\n  sessi
         // A long prose span that merely pairs braces is not an enumeration.
         let long = format!("{{ thiserror {} serde }}", "x".repeat(100));
         assert!(allowlist_sets(&long).is_empty());
+    }
+
+    #[test]
+    fn allowlist_sets_keeps_scanning_past_a_brace_that_cannot_form_a_set() {
+        // Regression: a stray `{` whose only closing `}` is the genuine set's own
+        // spans an over-long prose window; a *trailing* `{` past the set has no
+        // close at all. The old control flow jumped past the far `}` (swallowing
+        // the nested set) and then `break`ed on the trailing `{` (abandoning the
+        // file) — so a genuine `{ thiserror, serde, tokio }` drift went unchecked.
+        // The scan must step past each such brace and keep going, still surfacing
+        // the later mismatch.
+        let filler = "prose ".repeat(20); // pushes the stray span over the prose bound
+        let text = format!(
+            "a stray {{ {filler}then `{{ thiserror, serde, tokio }}` widens it, trailing {{"
+        );
+        assert_eq!(
+            allowlist_sets(&text),
+            vec![vec![
+                "thiserror".to_string(),
+                "serde".to_string(),
+                "tokio".to_string(),
+            ]]
+        );
     }
 
     #[test]
