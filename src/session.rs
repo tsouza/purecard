@@ -20,7 +20,7 @@ use crate::grammar::pda::{Frame, Pda};
 use crate::mask::BitMask;
 use crate::recognizer::ByteRecognizer;
 use crate::schema::Schema;
-use crate::schema::narrow::narrow;
+use crate::schema::narrow::narrow_into;
 use crate::schema::scope::ScopeTracker;
 
 /// A byte-at-a-time decode session over the emitted-Pure grammar, bound to a
@@ -44,6 +44,12 @@ pub struct DecoderSession<'g> {
     /// A reused scratch stack for the per-step deferred-token re-probe, kept here
     /// so the hot path never allocates.
     scratch: Vec<Frame>,
+    /// A second reused buffer the L2 overlay refills in place with the
+    /// schema-legal set, then intersects into `mask` — so narrowing allocates no
+    /// per-step mask (§4.3). Sized, like `mask`, to
+    /// [`CompiledGrammar::mask_len`]. Left untouched on the L1-only (`schema` is
+    /// `None`) path.
+    narrow_buf: BitMask,
     /// The optional L2 schema overlay. `None` is L1-only (M0–M2 behaviour): the
     /// schema-narrowing block in [`allowed_mask`](DecoderSession::allowed_mask) is
     /// skipped entirely, so there is zero added per-step cost.
@@ -66,6 +72,7 @@ impl<'g> DecoderSession<'g> {
             grammar,
             mask: BitMask::with_len(grammar.mask_len()),
             scratch: Vec::new(),
+            narrow_buf: BitMask::with_len(grammar.mask_len()),
             schema: None,
             tracker: ScopeTracker::new(),
         }
@@ -85,6 +92,7 @@ impl<'g> DecoderSession<'g> {
             grammar,
             mask: BitMask::with_len(grammar.mask_len()),
             scratch: Vec::new(),
+            narrow_buf: BitMask::with_len(grammar.mask_len()),
             schema: Some(schema),
             tracker: ScopeTracker::new(),
         }
@@ -134,16 +142,20 @@ impl<'g> DecoderSession<'g> {
         // L2 (§6): narrow the syntactic mask to the schema-legal set at exactly
         // this point. A pure `intersect` can only clear bits, so `L2 ⊆ L1` is
         // structural; the narrow set always keeps EOS so a complete query stays
-        // completable. When `schema` is `None` the block is skipped entirely.
+        // completable. The set is built into the reused `narrow_buf` (no per-step
+        // alloc); when `schema` is `None` the block is skipped entirely, so the
+        // L1-only path keeps its zero added per-step cost.
         if let Some(schema) = &self.schema {
             let pos = self.tracker.position(self.pda.state());
-            if let Some(legal) = narrow(
+            if narrow_into(
+                &mut self.narrow_buf,
                 schema,
                 &pos,
                 self.tracker.emitted_columns(),
                 self.grammar.vocab(),
+                self.grammar.eos_bit(),
             ) {
-                self.mask.intersect(&legal);
+                self.mask.intersect(&self.narrow_buf);
             }
         }
         &self.mask

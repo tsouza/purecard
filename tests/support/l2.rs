@@ -10,32 +10,12 @@
 //! concatenating the tokens reproduces the gold exactly — a stream M1 already
 //! proves streams soundly through the byte-PDA.
 //!
-//! Shared via `#[path]` by both L2 lanes; each uses a different subset of the
-//! helpers, so module-level `dead_code` is allowed here.
-#![allow(dead_code)]
+//! Shared via `#[path]` by the L2 lanes (soundness, properties, precision).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use purecard::{Schema, Vocab};
-
-/// The database ids that have a committed schema fixture (`tests/fixtures/schemas`).
-/// The five arm-C pilot contexts plus the three out-of-sample (OOS) held-out
-/// schemas — 269 in-scope gold queries in total (256 arm-A / 13 arm-C).
-pub const FIXTURE_DBS: &[&str] = &[
-    "battle_death",
-    "car_1",
-    "concert_singer",
-    "employee_hire_evaluation",
-    "pets_1",
-    "dog_kennels",
-    "student_transcripts_tracking",
-    "world_1",
-];
-
-/// The three OOS held-out schemas — never used to author a rule, so passing them
-/// proves the overlay generalizes to unseen schemas (§8.3, G5).
-pub const OOS_DBS: &[&str] = &["dog_kennels", "student_transcripts_tracking", "world_1"];
 
 /// Load the committed JSON schema fixture for `db_id` and parse it through the
 /// shipped `Schema::from_json` (so the §6.3 ingress is itself under test).
@@ -213,11 +193,5 @@ impl TokenVocab {
     #[must_use]
     pub fn id_of(&self, token: &[u8]) -> Option<u32> {
         self.ids.get(token).copied()
-    }
-
-    /// The reserved EOS bit id.
-    #[must_use]
-    pub fn eos(&self) -> u32 {
-        self.vocab.len() as u32
     }
 }

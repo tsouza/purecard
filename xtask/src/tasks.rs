@@ -244,10 +244,11 @@ const NON_CORE_PACKAGE_PREFIXES: &[&str] = &["tests/", "corpus/"];
 /// The core's runtime-dependency allowlist: the *only* crates permitted in the
 /// published `purecard` crate's `[dependencies]` table. `thiserror` is the
 /// decoder's library error-type crate (constitution §1; `DecodeError` in
-/// `src/error.rs`, ADR-0004). `serde` + `serde_json` are the **M3 widening**: L2
-/// ingests the host `Schema` as JSON at session init (`Schema::from_json`,
-/// `docs/spec/schema.md` §6.3, §9), so its parser is shipped host-facing code —
-/// a bespoke JSON parser would fail "library before writing" (constitution §4).
+/// `src/error.rs`, ADR-0004). `serde` + `serde_json` are the **M3 widening**
+/// (recorded in ADR-0005): L2 ingests the host `Schema` as JSON at session init
+/// (`Schema::from_json`, `docs/spec/schema.md` §6.3, §9), so its parser is shipped
+/// host-facing code — a bespoke JSON parser would fail "library before writing"
+/// (constitution §4).
 /// Every other dependency must be a `[dev-dependency]`. This list is a PROTECTED
 /// gate: it may only be widened by a human, with the justification recorded (as
 /// here); it never silently disables the check — a dep outside this set still

@@ -25,11 +25,14 @@ use std::path::PathBuf;
 mod corpus;
 #[path = "support/error.rs"]
 mod error;
+#[path = "support/fixture_dbs.rs"]
+mod fixture_dbs;
 #[path = "support/l2.rs"]
 mod l2;
 
 use corpus::load_gold;
-use l2::{FIXTURE_DBS, TokenVocab, lex, load_schema};
+use fixture_dbs::FIXTURE_DBS;
+use l2::{TokenVocab, lex, load_schema};
 use purecard::{CompiledGrammar, DecoderSession};
 
 /// Total in-scope gold queries (the 8 fixtures). A named constant, not a
@@ -72,7 +75,7 @@ fn replay_under_l2(
         "L2 SOUNDNESS: stream not complete at EOS for query:\n  {query}"
     );
     assert!(
-        session.allowed_mask().test(vocab.eos()),
+        session.allowed_mask().test(grammar.vocab().len() as u32),
         "L2 SOUNDNESS: EOS bit cleared by L2 for a complete query:\n  {query}"
     );
 }

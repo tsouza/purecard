@@ -23,46 +23,64 @@ use crate::vocab::Vocab;
 /// mistaken for a phantom class.
 const LET_KEYWORD: &str = "let";
 
-/// Build the schema-legal mask for `pos`, or `None` when the position carries no
-/// L2 constraint (the L1 mask passes through). `columns` is the N6 legal column
-/// set (the tracker's emitted-string superset); it is ignored for other rules.
-pub(crate) fn narrow(
+/// Refill the caller's reused `dst` buffer with the schema-legal set for `pos`,
+/// returning `true` when a constraint applied (the caller intersects `dst` into
+/// the L1 mask) or `false` when the position carries no L2 constraint (the L1
+/// mask passes through untouched).
+///
+/// `dst` is the session's own buffer, sized to the grammar's
+/// [`mask_len`](crate::grammar::compiled::CompiledGrammar::mask_len) — so
+/// narrowing allocates no per-step mask (§4.3). Both the mask length and
+/// `eos_bit` flow in from `compiled.rs`, the single source of the `V + 1` / EOS
+/// convention, rather than being re-derived from `vocab.len()` here (DRY: the
+/// session buffer and this legal set can never disagree on length). `columns` is
+/// the N6 legal column set (the tracker's emitted-string superset); it is ignored
+/// for other rules.
+pub(crate) fn narrow_into(
+    dst: &mut BitMask,
     schema: &Schema,
     pos: &L2Position,
     columns: &[String],
     vocab: &Vocab,
-) -> Option<BitMask> {
+    eos_bit: u32,
+) -> bool {
     match pos {
-        L2Position::None => None,
+        L2Position::None => false,
         L2Position::ReValue(TypeClass::Boolean | TypeClass::Temporal) => {
             // Boolean/temporal operand narrowing is deferred (§6.6 T1 ships only
             // the string/numeric levers) — keep the L1 mask unchanged.
-            None
+            false
         }
-        L2Position::SourceIdent => Some(build(vocab, |lex| match lex {
-            // A source position also legally holds the `let` binder keyword (a
-            // block-statement start) — it is grammar, not a phantom class.
-            Lexeme::Ident(text) => schema.is_source(text) || text == LET_KEYWORD,
-            _ => true,
-        })),
+        L2Position::SourceIdent => {
+            fill(dst, vocab, eos_bit, |lex| match lex {
+                // A source position also legally holds the `let` binder keyword (a
+                // block-statement start) — it is grammar, not a phantom class.
+                Lexeme::Ident(text) => schema.is_source(text) || text == LET_KEYWORD,
+                _ => true,
+            });
+            true
+        }
         L2Position::Member(class) => {
             let member_names = schema.member_names(class);
             let members: HashSet<&str> = member_names.iter().map(String::as_str).collect();
-            Some(build(vocab, |lex| match lex {
+            fill(dst, vocab, eos_bit, |lex| match lex {
                 Lexeme::Ident(text) => members.contains(text.as_str()),
                 _ => true,
-            }))
+            });
+            true
         }
         L2Position::ReValue(tc) => {
             let masked_by = *tc;
-            Some(build(vocab, |lex| keeps_operand(lex, masked_by)))
+            fill(dst, vocab, eos_bit, |lex| keeps_operand(lex, masked_by));
+            true
         }
         L2Position::Column => {
             let cols: HashSet<&str> = columns.iter().map(String::as_str).collect();
-            Some(build(vocab, |lex| match lex {
+            fill(dst, vocab, eos_bit, |lex| match lex {
                 Lexeme::Str(content) => cols.contains(content.as_str()),
                 _ => true,
-            }))
+            });
+            true
         }
     }
 }
@@ -80,25 +98,26 @@ fn keeps_operand(lex: &Lexeme, lhs: TypeClass) -> bool {
     }
 }
 
-/// Build a mask over `vocab` keeping every token for which `keep` holds (given
-/// its classified [`Lexeme`]), plus the reserved EOS bit.
-fn build(vocab: &Vocab, keep: impl Fn(&Lexeme) -> bool) -> BitMask {
-    let mut mask = BitMask::with_len(vocab.len() + 1);
+/// Refill `dst` in place — no allocation — keeping every `vocab` token for which
+/// `keep` holds (given its classified [`Lexeme`]), plus the reserved `eos_bit`.
+fn fill(dst: &mut BitMask, vocab: &Vocab, eos_bit: u32, keep: impl Fn(&Lexeme) -> bool) {
+    dst.clear_all();
     for id in 0..vocab.len() as u32 {
         let bytes = vocab.bytes(id).unwrap_or(&[]);
         if keep(&classify(bytes)) {
-            mask.set(id);
+            dst.set(id);
         }
     }
     // The EOS bit is always kept: L2 must never make a complete query
     // uncompletable (§4.3). The L1 mask decides whether it is actually set.
-    mask.set(vocab.len() as u32);
-    mask
+    dst.set(eos_bit);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::narrow;
+    use super::narrow_into;
+    use crate::grammar::compiled::CompiledGrammar;
+    use crate::mask::BitMask;
     use crate::schema::model::{Schema, TypeClass};
     use crate::schema::scope::L2Position;
     use crate::vocab::Vocab;
@@ -120,35 +139,50 @@ mod tests {
         Vocab::from_byte_tokens(owned, tokens.len() as u32)
     }
 
-    fn bit(mask: &crate::mask::BitMask, id: u32) -> bool {
+    fn bit(mask: &BitMask, id: u32) -> bool {
         mask.test(id)
+    }
+
+    /// Narrow a fresh buffer for `pos` over `v`, routing the mask length and EOS
+    /// bit through the grammar's single source (`compiled.rs`) exactly as the
+    /// session does. Returns whether a constraint applied and the filled buffer.
+    fn run(pos: &L2Position, cols: &[String], v: Vocab) -> (bool, BitMask) {
+        let grammar = CompiledGrammar::compile(v);
+        let mut mask = BitMask::with_len(grammar.mask_len());
+        let applied = narrow_into(
+            &mut mask,
+            &schema(),
+            pos,
+            cols,
+            grammar.vocab(),
+            grammar.eos_bit(),
+        );
+        (applied, mask)
     }
 
     #[test]
     fn none_position_yields_no_mask() {
-        assert!(narrow(&schema(), &L2Position::None, &[], &vocab(&[b"x"])).is_none());
+        assert!(!run(&L2Position::None, &[], vocab(&[b"x"])).0);
     }
 
     #[test]
     fn deferred_operand_classes_pass_through() {
-        // Boolean/temporal operand narrowing is deferred → no mask (pass-through).
+        // Boolean/temporal operand narrowing is deferred → no constraint (pass-through).
         assert!(
-            narrow(
-                &schema(),
+            !run(
                 &L2Position::ReValue(TypeClass::Boolean),
                 &[],
-                &vocab(&[b"x"])
+                vocab(&[b"x"])
             )
-            .is_none()
+            .0
         );
         assert!(
-            narrow(
-                &schema(),
+            !run(
                 &L2Position::ReValue(TypeClass::Temporal),
                 &[],
-                &vocab(&[b"x"])
+                vocab(&[b"x"])
             )
-            .is_none()
+            .0
         );
     }
 
@@ -156,18 +190,20 @@ mod tests {
     fn source_ident_keeps_classes_the_store_and_let_masks_phantoms() {
         // ids: 0 real class, 1 store, 2 `let`, 3 phantom, 4 a non-identifier `(`.
         let v = vocab(&[b"A", b"spider::d::Db", b"let", b"Nope", b"("]);
-        let mask = narrow(&schema(), &L2Position::SourceIdent, &[], &v).expect("constrains");
+        let eos = v.len() as u32;
+        let (applied, mask) = run(&L2Position::SourceIdent, &[], v);
+        assert!(applied);
         assert!(bit(&mask, 0) && bit(&mask, 1) && bit(&mask, 2));
         assert!(!bit(&mask, 3), "a phantom class is masked");
         assert!(bit(&mask, 4), "a non-identifier token is never touched");
-        assert!(bit(&mask, v.len() as u32), "EOS is always kept");
+        assert!(bit(&mask, eos), "EOS is always kept");
     }
 
     #[test]
     fn member_masks_a_non_member_ident_but_keeps_structure() {
         let v = vocab(&[b"n", b"phantom", b"."]);
-        let mask =
-            narrow(&schema(), &L2Position::Member("A".to_owned()), &[], &v).expect("constrains");
+        let (applied, mask) = run(&L2Position::Member("A".to_owned()), &[], v);
+        assert!(applied);
         assert!(bit(&mask, 0), "a real member survives");
         assert!(!bit(&mask, 1), "a phantom member is masked");
         assert!(bit(&mask, 2), "a non-identifier token is kept");
@@ -176,9 +212,12 @@ mod tests {
     #[test]
     fn revalue_masks_the_disjoint_literal_class_only() {
         // ids: 0 string lit, 1 number lit, 2 date lit, 3 an ident (navExpr operand).
-        let v = vocab(&[b"'x'", b"5", b"%2018-01-01", b"foo"]);
-        let numeric = narrow(&schema(), &L2Position::ReValue(TypeClass::Numeric), &[], &v)
-            .expect("constrains");
+        let (applied_n, numeric) = run(
+            &L2Position::ReValue(TypeClass::Numeric),
+            &[],
+            vocab(&[b"'x'", b"5", b"%2018-01-01", b"foo"]),
+        );
+        assert!(applied_n);
         assert!(
             !bit(&numeric, 0),
             "a string literal is masked for a numeric LHS"
@@ -192,8 +231,12 @@ mod tests {
             bit(&numeric, 3),
             "a navExpr operand is never masked by type"
         );
-        let string =
-            narrow(&schema(), &L2Position::ReValue(TypeClass::Str), &[], &v).expect("constrains");
+        let (applied_s, string) = run(
+            &L2Position::ReValue(TypeClass::Str),
+            &[],
+            vocab(&[b"'x'", b"5", b"%2018-01-01", b"foo"]),
+        );
+        assert!(applied_s);
         assert!(bit(&string, 0), "a string literal matches");
         assert!(
             !bit(&string, 1),
@@ -205,7 +248,8 @@ mod tests {
     fn column_keeps_emitted_names_and_masks_the_rest() {
         let v = vocab(&[b"'cnt'", b"'ghost'", b"getInteger"]);
         let cols = ["cnt".to_owned()];
-        let mask = narrow(&schema(), &L2Position::Column, &cols, &v).expect("constrains");
+        let (applied, mask) = run(&L2Position::Column, &cols, v);
+        assert!(applied);
         assert!(bit(&mask, 0), "an emitted column survives");
         assert!(!bit(&mask, 1), "an unemitted column string is masked");
         assert!(bit(&mask, 2), "a non-string token is kept");

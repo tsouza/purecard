@@ -16,18 +16,45 @@ use std::path::PathBuf;
 mod corpus;
 #[path = "support/error.rs"]
 mod error;
+#[path = "support/fixture_dbs.rs"]
+mod fixture_dbs;
 #[path = "support/l2.rs"]
 mod l2;
 
 use corpus::load_gold;
-use l2::{FIXTURE_DBS, TokenVocab, lex, load_schema};
+use fixture_dbs::FIXTURE_DBS;
+use l2::{TokenVocab, lex, load_schema};
 use purecard::{CompiledGrammar, DecoderSession};
+
+/// Total in-scope gold queries (the 8 fixtures). A named constant, not a
+/// threshold: a mis-count reddens the gate. Mirrors `l2_soundness.rs`.
+const IN_SCOPE_TOTAL: usize = 269;
 
 fn corpus_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("corpus/gold_queries.jsonl")
 }
 
-/// Assert `l2 ⊆ l1` for every gold token step of `query` (identified by `id`).
+/// Assert the L2 mask is a subset of the L1 mask at the two sessions' current
+/// position — every bit L2 admits, L1 admits too (`L2 ⊆ L1`).
+fn assert_masks_subset(
+    l1: &mut DecoderSession<'_>,
+    l2: &mut DecoderSession<'_>,
+    source_id: &str,
+    query: &str,
+) {
+    let l1_mask = l1.allowed_mask().clone();
+    let l2_mask = l2.allowed_mask();
+    for set_id in l2_mask.iter_ones() {
+        assert!(
+            l1_mask.test(set_id),
+            "L2 WIDENED L1 ({source_id}): token id {set_id} set in the schema mask \
+             but not the L1 mask\n  {query}"
+        );
+    }
+}
+
+/// Assert `l2 ⊆ l1` at every gold token step of `query` (identified by `id`) —
+/// including the terminal position after the final token.
 fn assert_l2_subset_l1(
     grammar: &CompiledGrammar,
     schema: &purecard::Schema,
@@ -39,20 +66,16 @@ fn assert_l2_subset_l1(
     let mut l2 = DecoderSession::with_schema(grammar, schema.clone());
     for token in lex(query) {
         let id = vocab.id_of(&token).expect("gold token in vocab");
-        let l1_mask = l1.allowed_mask().clone();
-        let l2_mask = l2.allowed_mask();
-        for set_id in l2_mask.iter_ones() {
-            assert!(
-                l1_mask.test(set_id),
-                "L2 WIDENED L1 ({source_id}): token id {set_id} set in the schema mask \
-                 but not the L1 mask\n  {query}"
-            );
-        }
+        assert_masks_subset(&mut l1, &mut l2, source_id, query);
         // Lockstep: the same token must be admissible to both (soundness already
         // proves L2 admits the gold token).
         l1.accept_token(id).expect("L1 admits gold");
         l2.accept_token(id).expect("L2 admits gold");
     }
+    // The terminal position too: a regression that widens L2 only once the query
+    // is complete (after the last accepted token) would slip past a prefix-only
+    // check. `l2_soundness` pins the terminal EOS bit; this pins the full set.
+    assert_masks_subset(&mut l1, &mut l2, source_id, query);
 }
 
 #[test]
@@ -80,5 +103,5 @@ fn l2_never_widens_l1_over_every_in_scope_gold_query() {
         }
     }
     // Non-vacuity: the property actually ran over the whole in-scope corpus.
-    assert_eq!(steps_checked, 269, "in-scope query count");
+    assert_eq!(steps_checked, IN_SCOPE_TOTAL, "in-scope query count");
 }

@@ -17,16 +17,17 @@ categories = ["parser-implementations", "text-processing"]
 # into the tarball — exactly what `just check-core-deplight` guards against.
 include = ["src/**/*", "/README.md", "/LICENSE"]
 
-# The core's dependency allowlist (ADR-0004; widened at M3): `thiserror`, `serde`,
-# `serde_json`. `thiserror` is the byte-PDA's library error type (constitution §1).
-# `serde` + `serde_json` are the M3 addition: L2 ingests the host `Schema` as JSON
-# at session init (`Schema::from_json`, `docs/spec/schema.md` §6.3, §9), so its
-# parser is shipped host-facing code, not a dev-only oracle — a bespoke JSON parser
-# would fail "library before writing" (§4) by owning escaping/number edge cases for
-# no gain. `cargo xtask check-core-deplight` enforces the widened
+# The core's dependency allowlist: `thiserror` (ADR-0004), plus `serde` +
+# `serde_json` — the M3 widening, recorded in ADR-0005. `thiserror` is the
+# byte-PDA's library error type (constitution §1). `serde` + `serde_json` ingest
+# the host `Schema` as JSON at session init (`Schema::from_json`,
+# `docs/spec/schema.md` §6.3, §9), so their parser is shipped host-facing code,
+# not a dev-only oracle — a bespoke JSON parser would fail "library before
+# writing" (§4) by owning escaping/number edge cases for no gain. `cargo xtask
+# check-core-deplight` enforces the widened
 # `[dependencies] ⊆ { thiserror, serde, serde_json }`; any other runtime dep still
-# fails the gate. `default-features = false` keeps serde `no_std`-clean/lean while
-# `derive` powers the `#[derive(Deserialize)]` schema types.
+# fails the gate. serde carries its default (`std`) features; `derive` powers the
+# `#[derive(Deserialize)]` schema types.
 [dependencies]
 thiserror = "2.0.18"
 serde = { version = "1.0.228", features = ["derive"] }
