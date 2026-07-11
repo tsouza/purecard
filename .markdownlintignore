@@ -3,8 +3,14 @@ target/
 gen/
 .git/
 
-# Inherited, verbatim inputs — the master spec and the committed test corpus —
-# are content kept as-is, not repo-authored prose maintained to our markdown
-# style. Style-linting them risks corrupting a spec / a fixture for no gain.
-DOMAIN.md
+# Inherited, verbatim inputs — the relocated master spec and the committed test
+# corpus — are content kept as-is, not repo-authored prose maintained to our
+# markdown style. They carry EBNF fences, emoji tables, and escaped-pipe tables
+# the aligner can't normalize; style-linting them risks corrupting the spec / a
+# fixture for no gain. (docs/spec/README.md is our own index and stays linted.)
+docs/spec/overview.md
+docs/spec/architecture.md
+docs/spec/grammar.md
+docs/spec/schema.md
+docs/spec/testing.md
 corpus/**

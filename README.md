@@ -23,9 +23,9 @@ schema-consistent, and every schema-consistent query is syntactic:
 | **L2 · SchemaConsistent** | Every identifier and type resolves against *this* model — no phantom names, no type mismatch | Overlay                    |
 | **L3 · Faithful**         | The query answers the question that was asked                                                | Out of scope (undecidable) |
 
-See [`DOMAIN.md`](DOMAIN.md) for the complete specification: the emitted-Pure
-grammar, the byte-level masking algorithm, the schema-consistency overlay, the
-public API, and the oracle-driven test strategy.
+See [the specification](docs/spec/README.md) for the full design: the
+emitted-Pure grammar, the byte-level masking algorithm, the schema-consistency
+overlay, the public API, and the oracle-driven test strategy.
 
 ## How it works
 
@@ -46,7 +46,7 @@ A per-state mask cache keeps mask generation off the critical path.
 ## Status
 
 Milestone **M0** (skeleton). The decoder lands across the milestones tracked in
-[`DOMAIN.md`](DOMAIN.md) §10:
+[`docs/spec/overview.md`](docs/spec/overview.md) §10:
 
 - **M0** oracle harness · **M1** L1 grammar · **M2** performance ·
   **M3** L2 schema overlay · **M4** PyO3 boundary · **M5** hardening.

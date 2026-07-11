@@ -10,14 +10,14 @@
 //!
 //! It offers two nested guarantees and deliberately refuses a third; see
 //! [`GuaranteeLevel`]. The complete design — grammar, masking algorithm, schema
-//! overlay, and the oracle-driven test strategy — is specified in `DOMAIN.md` at
-//! the repository root.
+//! overlay, and the oracle-driven test strategy — is specified under
+//! `docs/spec/`.
 //!
 //! ## Status
 //!
 //! This is milestone **M0** (skeleton). The decoder — vocabulary ingestion, the
 //! byte-level pushdown automaton, the schema overlay, and the PyO3 boundary —
-//! lands across the milestones tracked in `DOMAIN.md`.
+//! lands across the milestones tracked in `docs/spec/overview.md` (§10).
 
 /// The nested guarantee levels a constrained decoder can offer, ordered from
 /// weakest (the largest set of queries) to strongest (the smallest).

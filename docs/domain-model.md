@@ -6,7 +6,7 @@ states the non-negotiable domain *rules*; this file describes the *entities,
 workflows, and invariants* those rules govern. When the two disagree, the
 constitution wins.
 
-The authoritative, self-contained specification is [`../DOMAIN.md`](../DOMAIN.md);
+The authoritative, self-contained specification is [the full spec](spec/README.md);
 this file is the navigable model over it. This document is **EVOLVABLE** and grows
 one reviewer-approved PR at a time.
 
@@ -18,8 +18,8 @@ one reviewer-approved PR at a time.
   in git and in [`decisions/`](decisions/).
 - No filler. If an entry says nothing a reader couldn't infer from the type names,
   delete it.
-- Cross-link the spec (`specs/<name>.md`) and DOMAIN.md section that introduced
-  each concept.
+- Cross-link the feature spec (`specs/<name>.md`, from `just spec`) and the
+  `docs/spec/` section that introduced each concept.
 
 ---
 
@@ -39,8 +39,8 @@ the question's intent).
 **Relationships.** Every other entity exists to move a model's output up this
 hierarchy: the grammar/PDA delivers L1; the schema overlay delivers L2.
 
-**Introduced by.** DOMAIN.md §1. *(Skeleton — the entities below are specified in
-DOMAIN.md and land across milestones M0–M4; they are recorded here as the target
+**Introduced by.** [`spec/overview.md`](spec/overview.md) §1. *(Skeleton — the entities below are specified in
+the spec and land across milestones M0–M4; they are recorded here as the target
 model, not as shipped code.)*
 
 ### Vocab
@@ -49,7 +49,7 @@ model, not as shipped code.)*
 trie. A token is admissible iff feeding its raw bytes advances the byte-level
 automaton to a non-dead state — sidestepping subword-boundary alignment entirely.
 
-**Introduced by.** DOMAIN.md §4.1, §4.4, §9.1.
+**Introduced by.** [`spec/architecture.md`](spec/architecture.md) §4.1, §4.4, §9.1.
 
 ### PureGrammar / CompiledGrammar
 
@@ -62,7 +62,7 @@ corpus: any production a gold query violates is wrong and must be relaxed; any
 construct the corpus lacks stays out until a gold query adds it (oracle-driven,
 never speculative).
 
-**Introduced by.** DOMAIN.md §3, §4, §5.
+**Introduced by.** [`spec/architecture.md`](spec/architecture.md) §3, §4 and [`spec/grammar.md`](spec/grammar.md) §5.
 
 ### Schema
 
@@ -77,7 +77,7 @@ continues navigation, terminates a value, or narrows an enum. Association
 navigability is directional (§6.2.3): getting the direction backwards is a
 soundness bug.
 
-**Introduced by.** DOMAIN.md §6.2.
+**Introduced by.** [`spec/schema.md`](spec/schema.md) §6.2.
 
 ### Scope
 
@@ -85,7 +85,7 @@ soundness bug.
 (a row of a class) or `RelationScope` (a TDS/relation with named columns). The top
 of the scope stack determines which identifiers L2 admits.
 
-**Introduced by.** DOMAIN.md §6.4.
+**Introduced by.** [`spec/schema.md`](spec/schema.md) §6.4.
 
 ### DecoderSession
 
@@ -94,33 +94,33 @@ a `CompiledGrammar`. Its surface: `allowed_mask()`, `accept_token()`,
 `is_complete()`, `reset()`. The `#[cfg(feature = "python")]` PyO3 bindings wrap
 exactly this.
 
-**Introduced by.** DOMAIN.md §9.
+**Introduced by.** [`spec/architecture.md`](spec/architecture.md) §9.
 
 ## Workflows
 
 ### Compile a grammar (once per model + grammar)
 
 `PureGrammar::from_spec` → `compile(vocab)` builds the PDA and lazy per-state mask
-caches. DOMAIN.md §4.5, §9.1.
+caches. [`spec/architecture.md`](spec/architecture.md) §4.5, §9.1.
 
 ### Constrain one generation (per decode step)
 
 `mask = cache[state] ∩ runtime-stack-check ∩ schema-narrow(scope)`; the host
 `&`-masks the logits, samples, and calls `accept_token`; stop when `is_complete()`
 and EOS is sampled. Constraint applies only to the **final-query span** of a
-trajectory. DOMAIN.md §3.3, §4.3, §9.3.
+trajectory. [`spec/architecture.md`](spec/architecture.md) §3.3, §4.3, §9.3.
 
 ## Cross-cutting invariants
 
 - **Soundness (the killer property).** The mask must never forbid a token that a
   verified gold query actually emits. Replaying the 5,034-query gold corpus and
   asserting every next token is in `allowed_mask()` is the always-on gate
-  (DOMAIN.md §8.1) — and it runs offline, with no Legend engine.
+  ([`spec/testing.md`](spec/testing.md) §8.1) — and it runs offline, with no Legend engine.
 - **L2 only narrows, never widens.** The schema overlay intersects L1's terminal
-  set; it can only remove admissible tokens, never add them (DOMAIN.md §3.1).
+  set; it can only remove admissible tokens, never add them ([`spec/architecture.md`](spec/architecture.md) §3.1).
 - **Completeness.** Constrained generations must compile against the real Legend
   engine; a compile failure is a grammar/overlay gap to tighten oracle-driven
-  (DOMAIN.md §8.2).
+  ([`spec/testing.md`](spec/testing.md) §8.2).
 
 ## Glossary
 
