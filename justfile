@@ -90,12 +90,13 @@ bench:
     cargo bench --workspace
 
 # Legend-backed completeness lane (opt-in; DOMAIN §8.2/§14.4). Needs docker +
-# the pinned Legend stack. Brings the stack up, then runs the `legend`-feature
-# tests (each health-waits the engine itself). NOT part of the hermetic `just
-# ci`; run on demand or nightly on an x86 runner.
+# the pinned Legend stack. Delegates to xtask, which brings the stack up, runs
+# the `legend`-feature tests (each health-waits the engine itself), then ALWAYS
+# tears the stack down — so a failed run never leaves containers running
+# (constitution §2: teardown logic belongs in xtask, not a shell trap). NOT part
+# of the hermetic `just ci`; run on demand or nightly on an x86 runner.
 test-legend:
-    docker compose -f corpus/legend-stack/docker-compose.yml up -d
-    cargo nextest run --features legend
+    cargo xtask test-legend
 
 # ---------------------------------------------------------------------------
 # Coverage, supply-chain & API-stability gates

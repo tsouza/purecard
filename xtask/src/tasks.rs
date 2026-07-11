@@ -65,6 +65,34 @@ pub fn sweep() -> Result<()> {
     run("ast-grep", &["scan"])
 }
 
+/// Docker Compose file for the pinned Legend engine stack.
+const LEGEND_COMPOSE_FILE: &str = "corpus/legend-stack/docker-compose.yml";
+
+/// Run the opt-in Legend completeness lane with guaranteed teardown.
+///
+/// Brings the pinned Legend stack up, runs the `legend`-feature tests, then
+/// **always** tears the stack down — even when the tests fail — so a red run
+/// never leaves containers running. Encoding up→test→teardown here (rather than
+/// as a shell `trap` in the recipe) keeps the justfile free of non-trivial shell
+/// (constitution §2). The test result is propagated after teardown so a failure
+/// still reddens the lane.
+///
+/// # Errors
+///
+/// Returns the test failure if the tests fail; otherwise a teardown failure if
+/// `docker compose down` fails.
+pub fn test_legend() -> Result<()> {
+    run(
+        "docker",
+        &["compose", "-f", LEGEND_COMPOSE_FILE, "up", "-d"],
+    )?;
+    // Capture, do NOT `?`-return: teardown must run regardless of the outcome.
+    let tested = run("cargo", &["nextest", "run", "--features", "legend"]);
+    let torn_down = run("docker", &["compose", "-f", LEGEND_COMPOSE_FILE, "down"]);
+    tested?;
+    torn_down
+}
+
 /// The minimum acceptable line-coverage percentage. Enforced as a hard floor so
 /// coverage can only ratchet upward. Tighten with human sign-off; never loosen.
 const COVERAGE_FLOOR_PCT: &str = "70";

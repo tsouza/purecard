@@ -38,20 +38,35 @@ Explicitly **out of scope** for M0 — deferred, not forgotten:
 
 ## Design
 
-### Module layout under `src/`
+### Module layout
+
+The published `purecard` core stays dep-light and harness-free (ADR-0003): only
+the pieces a downstream consumer needs live in `src/`. Every oracle-harness
+module — the ones that pull in `serde`/`serde_json`/`ureq`/`anyhow` — lives under
+`tests/support/` and is compiled into the integration-test binaries via `#[path]`,
+so it never enters the published crate's dependency graph (`just check-core-deplight`
+enforces this).
 
 ```text
-src/lib.rs         crate root: #![forbid(unsafe_code)] #![deny(missing_docs)];
-                   keeps GuaranteeLevel; `pub mod` decls; re-exports the M0 API.
-src/error.rs       thiserror error types (DecodeError, CorpusError).
-src/vocab.rs       Vocab (id→bytes + eos). No trie.
-src/recognizer.rs  ByteRecognizer trait + StubDecoder + replay_bytes helper.
-src/corpus.rs      GoldRecord (serde) + streaming load_gold(path) iterator.
-src/legend.rs      Default: ReturnTypeOutcome + pure classify_return_type(&Value).
-                   The LegendClient ureq I/O shim is #[cfg(feature = "legend")].
+src/lib.rs                    crate root: #![forbid(unsafe_code)] #![deny(missing_docs)];
+                              GuaranteeLevel lattice + re-exports of the dep-light core.
+src/vocab.rs                  Vocab (id→bytes + eos). No trie.
+tests/support/error.rs        thiserror error types (DecodeError, CorpusError).
+tests/support/recognizer.rs   ByteRecognizer trait + StubDecoder + replay_bytes helper.
+tests/support/corpus.rs       GoldRecord (serde) + streaming load_gold(path) iterator.
+tests/support/legend.rs       default: ReturnTypeOutcome + pure classify_return_type + the
+                              URL-join helper; the LegendClient ureq shim is
+                              #[cfg(feature = "legend")].
+tests/soundness_replay.rs     always-on wiring/liveness gate (default features).
+tests/classify_oracle.rs      runs the classifier unit tests under default features.
+tests/legend_completeness.rs  opt-in engine lane (#![cfg(feature = "legend")]).
 ```
 
-Rationale: this is the "minimal vertical slice" spine — one module per concept, no `DecoderSession` wrapper (see Decisions). Splitting errors into `DecodeError` (recognizer domain) and `CorpusError` (loader/IO domain) keeps each type honest about its own failure surface and matches the two independent concerns the harness bolts together.
+Rationale: this is the "minimal vertical slice" spine — one module per concept, no
+`DecoderSession` wrapper (see Decisions). Splitting errors into `DecodeError`
+(recognizer domain) and `CorpusError` (loader/IO domain) keeps each type honest
+about its own failure surface and matches the two independent concerns the harness
+bolts together.
 
 ### Byte-level soundness approach (no shipped vocab)
 
@@ -240,12 +255,15 @@ impl LegendClient {
 }
 ```
 
-`anyhow` is an **optional dep** pulled in only by the `engine` feature and
-used **only** in the gated shim (per constitution §1: `thiserror` in the lib,
-`anyhow` at boundaries). The default-feature surface — `classify_return_type`
-included — uses `thiserror`/plain returns exclusively. grammarToJson (§14.2
-step 1) is bypassed at M0 by feeding a canned protocol-JSON fixture, so the
-client makes exactly one POST.
+`anyhow` is used **only** in the `#[cfg(feature = "legend")]` shim (per
+constitution §1: `thiserror` in the lib, `anyhow` at boundaries). Because the
+whole harness is `[dev-dependencies]` on the published crate (ADR-0003), `ureq`
+and `anyhow` are **unconditional dev-deps**, and `legend` is a bare cfg flag
+(`legend = []`) rather than a `dep:`-activating feature — a dev-dependency cannot
+be `dep:`-gated. The default-feature surface — `classify_return_type` included —
+uses `thiserror`/plain returns exclusively. grammarToJson (§14.2 step 1) is
+bypassed at M0 by feeding a canned protocol-JSON fixture, so the client makes
+exactly one POST.
 
 ## API / contract impact
 
@@ -284,10 +302,10 @@ These keep all M0 decision logic — the classifier included — in default feat
 
 ### Opt-in engine lane (completeness) — the no-skip mechanism
 
-`tests/legend_completeness.rs` begins with **`#![cfg(feature = "legend")]`** (file-level). The exact honesty mechanism: **cargo/nextest never *collect* these tests unless `--features engine` is passed** — the entire compilation unit is conditionally absent from the default build graph. There is **no `#[ignore]`, no runtime `return`, no weakened assertion** — nothing is silenced. The default gate's pass/fail is provably identical whether or not the engine exists, matching §14.4's opt-in/nightly recommendation.
+`tests/legend_completeness.rs` begins with **`#![cfg(feature = "legend")]`** (file-level). The exact honesty mechanism: **cargo/nextest never *collect* these tests unless `--features legend` is passed** — the entire compilation unit is conditionally absent from the default build graph. There is **no `#[ignore]`, no runtime `return`, no weakened assertion** — nothing is silenced. The default gate's pass/fail is provably identical whether or not the engine exists, matching §14.4's opt-in/nightly recommendation.
 
 - **`engine_client_reaches_lambda_return_type_endpoint`** — `LegendClient::health_wait(timeout)`, POST the canned protocol-JSON + PMCD fixtures (committed under `tests/fixtures/`), and assert a classified outcome is read back — `ReturnTypeOutcome::ReturnType(_) | CompileError(_)`. The fixtures are provisional placeholders (spec R4), so asserting a *specific* `ReturnType(_)` is deferred to M1 once they are regenerated from a real §14.2 roundtrip.
-- Driven by a `just test-engine` target: `docker compose -f corpus/legend-stack/docker-compose.yml up -d` → §14.1 health-wait → `cargo nextest run --features engine`.
+- Driven by `just test-legend`, which delegates to `cargo xtask test-legend`: the xtask brings the pinned stack up (`docker compose … up -d`), runs `cargo nextest run --features legend` (each test §14.1 health-waits the engine itself), then **always** tears the stack down — teardown lives in xtask, not a shell trap (constitution §2).
 
 The completeness-loop *logic* — `classify_return_type` — lives in default features and is fully covered and mutation-tested (above), so the return-type/error split cannot pass vacuously. Only the live HTTP shim (`LegendClient`'s `ureq` POST + `health_wait`) is deferred behind `feature = "legend"`; it is pure I/O with nothing meaningful to mutation-test hermetically, and it removes nothing from the measured set. **Pre-merge, `just ci` runs `cargo clippy --all-features -- -D warnings`**, so `legend.rs` — the gated shim included — is compiled and linted (`missing_docs`, `unsafe`, clippy) on every PR with zero docker/network. That is the constitution §2 pre-merge counterpart; only the LIVE-engine POST stays nightly/opt-in per DOMAIN §14.4.
 
@@ -295,21 +313,21 @@ The completeness-loop *logic* — `classify_return_type` — lives in default fe
 
 Rubric: `docs/methodology/overview.md` + the `dependency-vetting` skill. Prefer a vetted crate over bespoke only when it clears maintenance/license/supply-chain **and** the bespoke alternative owns hard edge cases. `deny.toml` already allows MIT/Apache and trusts only crates.io.
 
-| Dep              | Verdict                                          | One-line justification                                                                                                                                                                                                                           |
-| ---------------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `serde` (derive) | **Adopt**                                        | Standard, license-clean; `GoldRecord` derive is the idiomatic, DRY way to read §13.1 records.                                                                                                                                                    |
-| `serde_json`     | **Adopt**                                        | Already a workspace dep (xtask); a hand-rolled line splitter would have to reimplement full JSON string unescaping for the escaped `\n`/quotes inside `pure_text` — a bespoke parser owning the format's edge cases (constitution §4), rejected. |
-| `thiserror`      | **Adopt**                                        | Constitution §1 mandates it for the lib error enums.                                                                                                                                                                                             |
-| `ureq`           | **Adopt (feature-gated `engine`, default OFF)**  | Blocking one-shot POST; pure-Rust + rustls, tiny tree, actively maintained. `reqwest` (tokio/hyper/TLS) is rejected for a byte-level lib; `attohttpc` viable but `ureq` has the smaller footprint.                                               |
-| `anyhow`         | **Adopt (feature-gated `engine`, optional dep)** | Constitution §1 permits it at boundaries; an optional dep pulled in by `engine = ["dep:ureq", "dep:anyhow"]` and used solely by the gated `LegendClient` shim.                                                                                   |
+| Dep              | Verdict                                          | One-line justification                                                                                                                                                                                                                                                                                                                                      |
+| ---------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serde` (derive) | **Adopt**                                        | Standard, license-clean; `GoldRecord` derive is the idiomatic, DRY way to read §13.1 records.                                                                                                                                                                                                                                                               |
+| `serde_json`     | **Adopt**                                        | Already a workspace dep (xtask); a hand-rolled line splitter would have to reimplement full JSON string unescaping for the escaped `\n`/quotes inside `pure_text` — a bespoke parser owning the format's edge cases (constitution §4), rejected.                                                                                                            |
+| `thiserror`      | **Adopt**                                        | Constitution §1 mandates it for the lib error enums.                                                                                                                                                                                                                                                                                                        |
+| `ureq`           | **Adopt (dev-dep; `legend` lane only)**          | Blocking one-shot POST, tiny tree, actively maintained. Configured `default-features = false`, so **TLS is off** — the engine is a local, plain-HTTP service (`http://localhost:6300`), pulling in no rustls/ring/webpki-roots tree. `reqwest` (tokio/hyper/TLS) is rejected for a byte-level lib; `attohttpc` viable but `ureq` has the smaller footprint. |
+| `anyhow`         | **Adopt (dev-dep; `legend` lane only)**          | Constitution §1 permits it at boundaries; an **unconditional `[dev-dependency]`** used solely by the `#[cfg(feature = "legend")]` `LegendClient` shim. `legend` is a bare cfg flag, not a `dep:` feature — a dev-dependency cannot be `dep:`-gated.                                                                                                         |
 
-**Write-our-own:** the recognizer, replay driver, and `Vocab` — trivial, domain-specific, no crate offers them. **Pin discipline:** all are added via `cargo add <name>` (no version) so the pin is the current crates.io release, verified at add-time per constitution §2; the exact versions land in the PR, not from memory.
+**Write-our-own:** the recognizer, replay driver, and `Vocab` — trivial, domain-specific, no crate offers them. **Pin discipline:** each dep's pin is the current crates.io release, verified at add-time per constitution §2 (`cargo add` with no version writes it); the exact versions land in the PR, not from memory.
 
 ## Risks & rollout
 
 - **R1 — replay proves less than §8.1.** Byte-level replay is *not* token-id soundness; a green M0 gate can lull us into thinking the real §8.1 guarantee holds. *Mitigation:* the non-goal and the soundness-test doc comment state explicitly that token-id replay is deferred to M1+ once a host vocab ships. No claim of §8.1 soundness at M0.
 - **R2 — corpus path brittleness.** The soundness test hardcodes `corpus/gold_queries.jsonl` relative to the crate root. *Mitigation:* resolve via `env!("CARGO_MANIFEST_DIR")` so it is CWD-independent and reproducible in CI's detached-HEAD checkout (constitution §2 pre-merge/CI reproducibility).
-- **R3 — engine lane is amd64 + ~1.7 GB docker.** Can't run in the default hermetic gate. *Mitigation:* that is the point of the feature gate — the lane is opt-in (`just test-engine`), and the default gate is fully hermetic. Engine images are pinned (finos 4.113.0 / 0.195.0) per finding.
+- **R3 — engine lane is amd64 + ~1.7 GB docker.** Can't run in the default hermetic gate. *Mitigation:* that is the point of the feature gate — the lane is opt-in (`just test-legend`), and the default gate is fully hermetic. Engine images are pinned (finos 4.113.0 / 0.195.0) per finding.
 - **R4 — canned engine fixtures are provisional placeholders, not a real roundtrip.** The committed `tests/fixtures/{lambda,model}.json` are hand-written PROVISIONAL placeholders (each carries a `_comment` saying so), **not** artifacts of a real §14.2 `grammarToJson -> lambdaReturnType` roundtrip. Against a live stack the engine lane will therefore return an HTTP 500 compile error until they are regenerated. *Mitigation:* regeneration from a real roundtrip is an M1 concern, tracked as a `ponytail:` deferral in `legend.rs` and `tests/legend_completeness.rs`; until then the lane asserts only that a classified outcome (return type **or** compile error) is read back, and the specific-`ReturnType` assertion is deferred to M1.
 
 **Rollout:** land behind default features with the engine lane off; `just ci` green pre-merge. The engine lane runs on demand locally and can later be promoted to a nightly CI job (cached/pinned images per constitution §2) without touching the default gate.
@@ -318,15 +336,15 @@ Rubric: `docs/methodology/overview.md` + the `dependency-vetting` skill. Prefer 
 
 Ordered, each independently testable and independently committable:
 
-1. **Cargo.toml** — `cargo add serde --features derive`, `cargo add serde_json thiserror`; `cargo add ureq --optional`, `cargo add anyhow --optional`; declare `[features] engine = ["dep:ureq", "dep:anyhow"]`. Confirm default build is dep-light. *(testable: `cargo build`, `cargo build --features engine`, and `cargo clippy --all-features -- -D warnings` all compile clean.)*
-2. **`src/error.rs`** — `DecodeError`, `CorpusError` + unit tests for `Display`/fields. *(testable: unit.)*
-3. **`src/vocab.rs`** — `Vocab` + unit tests. *(testable: unit.)*
-4. **`src/recognizer.rs`** — `ByteRecognizer`, `StubDecoder`, `replay_bytes` (single deadness channel via `accept_byte`'s `Err`) + unit tests (incl. a test recognizer whose `accept_byte` returns `Err` to exercise `DeadState`). *(testable: unit.)*
-5. **`src/corpus.rs`** — `GoldRecord`, `load_gold` streaming iterator + unit tests (valid + malformed line). *(testable: unit.)*
-6. **`tests/soundness_replay.rs`** — `gold_corpus_streams_and_replays_without_harness_error` (assert every item `Ok`, `count == EXPECTED_GOLD_RECORDS`) + `corpus_path_reports_dead_state` negative test; wire path via `CARGO_MANIFEST_DIR`. Run `just ci`; confirm ≥70% coverage + mutants green. *(testable: integration, satisfies G1/G2/G4.)*
-7. **`src/legend.rs`** — default-feature `ReturnTypeOutcome` + pure `classify_return_type(&Value)` with canned success/error JSON unit tests; the `#[cfg(feature="legend")]` `LegendClient` (`health_wait`, `lambda_return_type`) is a thin `ureq` shim that delegates classification to it. Add `cargo clippy --all-features -- -D warnings` to the `just ci` target so the shim is compiled + linted pre-merge (constitution §2). *(testable: classifier unit + mutation on default features; `cargo build --features engine`.)*
-8. **`tests/fixtures/`** + **`tests/legend_completeness.rs`** (`#![cfg(feature="legend")]`) + **justfile `test-engine`** (compose up + health-wait + `nextest --features engine`). *(testable: opt-in lane against a live stack, satisfies G3.)*
-9. **`src/lib.rs`** — module decls + re-exports; keep `GuaranteeLevel`; confirm `#![forbid(unsafe_code)]` / `#![deny(missing_docs)]`. Final `just ci` green. *(testable: full gate.)*
+1. **Cargo.toml** — add `serde` (derive), `serde_json`, `thiserror`, `ureq` (`default-features = false`, `json`), and `anyhow` to **`[dev-dependencies]`**; keep the published `[dependencies]` table empty; declare the bare `legend = []` feature (a dev-dependency can't be `dep:`-gated). *(testable: `just check-core-deplight` proves the core stays dep-light; `just lint` compiles + lints every feature set clean.)*
+2. **`tests/support/error.rs`** — `DecodeError`, `CorpusError` + unit tests for `Display`/fields. *(testable: `just test`.)*
+3. **`src/vocab.rs`** — `Vocab` + unit tests. *(testable: `just test`.)*
+4. **`tests/support/recognizer.rs`** — `ByteRecognizer`, `StubDecoder`, `replay_bytes` (single deadness channel via `accept_byte`'s `Err`) + unit tests (incl. a test recognizer whose `accept_byte` returns `Err` to exercise `DeadState`). *(testable: `just test`.)*
+5. **`tests/support/corpus.rs`** — `GoldRecord`, `load_gold` streaming iterator + unit tests (valid + malformed line). *(testable: `just test`.)*
+6. **`tests/soundness_replay.rs`** — pull the `support/` modules in via `#[path]`; `gold_corpus_streams_and_replays_without_harness_error` (assert every item `Ok`, `count == EXPECTED_GOLD_RECORDS`) + `corpus_path_reports_dead_state` negative test; wire path via `CARGO_MANIFEST_DIR`. Run `just ci`; confirm coverage + mutants green with `just coverage` / `just test-mutation`. *(testable: integration, satisfies G1/G2/G4.)*
+7. **`tests/support/legend.rs`** — default-feature `ReturnTypeOutcome` + pure `classify_return_type(&Value)` (with the URL-join helper) and canned success/error JSON unit tests, run under default features via `tests/classify_oracle.rs`; the `#[cfg(feature = "legend")]` `LegendClient` (`health_wait`, `lambda_return_type`) is a thin `ureq` shim that delegates classification to it. `just ci`'s all-features clippy pass compiles + lints the shim pre-merge (constitution §2). *(testable: classifier unit + mutation on default features via `just test` / `just test-mutation`; `just lint` builds the legend shim.)*
+8. **`tests/fixtures/`** + **`tests/legend_completeness.rs`** (`#![cfg(feature = "legend")]`) + the `just test-legend` target (delegating to `cargo xtask test-legend`: compose up → `nextest --features legend` → unconditional teardown). *(testable: opt-in lane against a live stack, satisfies G3.)*
+9. **`src/lib.rs`** — `GuaranteeLevel` + re-exports of the dep-light core; confirm `#![forbid(unsafe_code)]` / `#![deny(missing_docs)]`. Final `just ci` green. *(testable: `just ci`.)*
 
 ## Decisions for the human
 

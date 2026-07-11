@@ -43,12 +43,22 @@ pub fn classify_return_type(resp: &Value) -> ReturnTypeOutcome {
     }
 }
 
+/// Join an API `base` with an absolute `path`, collapsing any trailing slash on
+/// the base so the two never yield a double slash (`.../api//server/v1/info`).
+///
+/// Kept default-feature (not behind `legend`) so the URL-join contract is
+/// unit-testable with zero infra, even though its only runtime caller —
+/// [`LegendClient`] — is feature-gated.
+fn join(base: &str, path: &str) -> String {
+    format!("{}{path}", base.trim_end_matches('/'))
+}
+
 #[cfg(feature = "legend")]
 pub use client::LegendClient;
 
 #[cfg(feature = "legend")]
 mod client {
-    use super::{ReturnTypeOutcome, classify_return_type};
+    use super::{ReturnTypeOutcome, classify_return_type, join};
     use serde_json::Value;
     use std::time::{Duration, Instant};
 
@@ -58,6 +68,9 @@ mod client {
     const INFO_PATH: &str = "/server/v1/info";
     /// Delay between health-poll attempts.
     const POLL_INTERVAL: Duration = Duration::from_secs(2);
+    /// Per-request wall-clock bound for the compile POST, so a hung engine
+    /// connection fails the lane instead of blocking the test forever.
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// Blocking client for the Legend Engine compile contract (§14).
     pub struct LegendClient {
@@ -84,22 +97,28 @@ mod client {
         /// # Errors
         /// Returns an error if the engine is not healthy within `timeout`.
         pub fn health_wait(&self, timeout: Duration) -> anyhow::Result<()> {
-            let url = format!("{}{INFO_PATH}", self.base);
+            let url = join(&self.base, INFO_PATH);
             let deadline = Instant::now() + timeout;
             loop {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    anyhow::bail!("engine not healthy at {url} within {timeout:?}");
+                }
+                // Bound each poll to the time left on the deadline so a hung
+                // connection can't block past `timeout`.
                 if let Ok(resp) = ureq::get(&url)
                     .config()
                     .http_status_as_error(false)
+                    .timeout_global(Some(remaining))
                     .build()
                     .call()
                     && resp.status().is_success()
                 {
                     return Ok(());
                 }
-                if Instant::now() >= deadline {
-                    anyhow::bail!("engine not healthy at {url} within {timeout:?}");
-                }
-                std::thread::sleep(POLL_INTERVAL);
+                // Cap the sleep at the time left so it never overshoots.
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(POLL_INTERVAL.min(remaining));
             }
         }
 
@@ -118,13 +137,14 @@ mod client {
             lambda: &Value,
             model: &Value,
         ) -> anyhow::Result<ReturnTypeOutcome> {
-            let url = format!("{}{COMPILE_PATH}", self.base);
+            let url = join(&self.base, COMPILE_PATH);
             let mut body = serde_json::Map::new();
             body.insert("lambda".to_owned(), lambda.clone());
             body.insert("model".to_owned(), model.clone());
             let mut resp = ureq::post(&url)
                 .config()
                 .http_status_as_error(false)
+                .timeout_global(Some(REQUEST_TIMEOUT))
                 .build()
                 .send_json(Value::Object(body))?;
             let value: Value = resp.body_mut().read_json()?;
@@ -135,10 +155,23 @@ mod client {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReturnTypeOutcome, classify_return_type};
+    use super::{ReturnTypeOutcome, classify_return_type, join};
 
     fn value(json: &str) -> serde_json::Value {
         serde_json::from_str(json).expect("valid test json")
+    }
+
+    #[test]
+    fn join_yields_exactly_one_slash_for_both_base_forms() {
+        let expected = "http://localhost:6300/api/server/v1/info";
+        assert_eq!(
+            join("http://localhost:6300/api", "/server/v1/info"),
+            expected
+        );
+        assert_eq!(
+            join("http://localhost:6300/api/", "/server/v1/info"),
+            expected
+        );
     }
 
     #[test]
@@ -169,9 +202,9 @@ mod tests {
 
     #[test]
     fn compile_error_without_message_falls_back_to_the_full_body() {
-        // No `message` and no usable `returnType`, so the error string must be
-        // the whole response body — pins the `map_or_else` default branch
-        // (`|| resp.to_string()`) against a `-> String::new()` mutant.
+        // With no `message` and no usable `returnType`, the error detail must
+        // fall back to the whole response body, never an empty string, so the
+        // caller still gets something diagnosable.
         let ReturnTypeOutcome::CompileError(detail) =
             classify_return_type(&value(r#"{"returnType":""}"#))
         else {

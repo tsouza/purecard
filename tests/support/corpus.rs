@@ -83,9 +83,8 @@ mod tests {
     fn streams_records_and_skips_blank_lines() {
         let line = r#"{"db_id":"d","source_id":"s","arm":"A","constructs":[],"pure_text":"|Y"}"#;
         let path = write_temp("purecard_gold_ok.jsonl", &format!("{line}\n\n{line}\n"));
-        // Assert the TOTAL item count and that every item is `Ok`: a mutant that
-        // flips the blank-line skip (`trim().is_empty() -> false`) would surface
-        // the blank line as an extra `Err` item, so both facts must hold.
+        // The blank middle line is skipped, so the two data lines yield exactly
+        // two records and every item parses `Ok` — the blank contributes nothing.
         let items: Vec<Result<GoldRecord, CorpusError>> = load_gold(&path).expect("open").collect();
         assert_eq!(items.len(), 2, "{items:?}");
         assert!(items.iter().all(Result::is_ok), "{items:?}");

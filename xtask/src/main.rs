@@ -29,6 +29,8 @@ enum Command {
     Ci,
     /// Run cargo-machete / dependency & formatting sweep to tidy the tree.
     Sweep,
+    /// Bring up the Legend stack, run the `legend`-feature tests, always tear down.
+    TestLegend,
     /// Produce a test-coverage report via cargo-llvm-cov.
     Coverage {
         /// Emit an HTML report in addition to the summary.
@@ -62,6 +64,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Ci => tasks::ci(),
         Command::Sweep => tasks::sweep(),
+        Command::TestLegend => tasks::test_legend(),
         Command::Coverage { html } => tasks::coverage(html),
         Command::ReleasePlzCheck => tasks::release_plz_check(),
         Command::CheckCoreDeplight => tasks::check_core_deplight(),
