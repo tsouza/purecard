@@ -10,4 +10,12 @@
 # `#[cfg(feature = "legend")]` client is not compiled in the default-feature
 # mutants build, and the pure `classify_return_type` it delegates to is
 # mutation-tested by the always-on `tests/classify_oracle.rs` binary.
+#
+# `examine_globs` is an explicit allowlist, not a denylist: mutation is confined
+# to the shipped dep-light core under `src/` (lib.rs + vocab.rs). An allowlist
+# is the policy-matching form — a bare `exclude_globs = ["xtask/**"]` would leave
+# `tests/` harness helpers eligible, mutating dev-only code the floor never meant
+# to cover. `xtask/**` stays excluded for defense in depth (it is outside `src/`
+# regardless).
+examine_globs = ["src/**/*.rs"]
 exclude_globs = ["xtask/**"]

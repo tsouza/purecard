@@ -31,13 +31,13 @@ fn fixture(name: &str) -> serde_json::Value {
 
 #[test]
 fn engine_client_reaches_lambda_return_type_endpoint() {
-    // ponytail: the committed fixtures are provisional placeholders, so this
-    // lane will 500 against a live stack until they are regenerated from a real
-    // §14.2 grammarToJson -> lambdaReturnType roundtrip (M1, spec R4). At M0 the
-    // assertion is the §10 done-criterion clause 2 exactly — that we can POST a
-    // query and *read the result*: the call reaches the engine and returns a
-    // classified outcome (a ReturnType, or a CompileError from the placeholder).
-    // Asserting a specific ReturnType is deferred to M1 with the real fixtures.
+    // ponytail: the committed fixtures are provisional placeholders, so the
+    // placeholder lambda always fails to compile — the live stack returns HTTP
+    // 500 with a non-empty error body, which the client classifies as a
+    // `CompileError`. That is exactly the §10 done-criterion clause 2: we can
+    // POST a query and *read a classified result* off a live engine. Asserting a
+    // specific `ReturnType` arrives at M1, once the fixtures are regenerated from
+    // a real §14.2 grammarToJson -> lambdaReturnType roundtrip (spec R4).
     let client = LegendClient::new(ENGINE_BASE);
     client
         .health_wait(HEALTH_TIMEOUT)
@@ -45,8 +45,11 @@ fn engine_client_reaches_lambda_return_type_endpoint() {
     let outcome = client
         .lambda_return_type(&fixture("lambda.json"), &fixture("model.json"))
         .expect("POST lambdaReturnType and read a classified result");
-    assert!(matches!(
-        outcome,
-        ReturnTypeOutcome::ReturnType(_) | ReturnTypeOutcome::CompileError(_)
-    ));
+    let ReturnTypeOutcome::CompileError(message) = outcome else {
+        panic!("placeholder fixtures must fail to compile, got: {outcome:?}");
+    };
+    assert!(
+        !message.is_empty(),
+        "a compile error must carry a diagnosable, non-empty body"
+    );
 }

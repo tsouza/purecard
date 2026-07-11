@@ -74,10 +74,8 @@ fn gold_corpus_streams_and_replays_without_harness_error() {
             Ok(consumed) => consumed,
             Err(err) => panic!("replay dead-ended on {}: {err}", record.source_id),
         };
-        // Real assertions with mutation surface: a `replay_bytes -> Ok(0)` mutant
-        // dies on the return value, the recognizer's own counter must reach the
-        // full stream length (a "stub stops counting" mutant dies here), and the
-        // stub must report completeness at end of stream.
+        // The driver's returned count and the recognizer's own counter must both
+        // equal the stream length, and the stub must be complete at end of stream.
         assert_eq!(consumed, record.pure_text.len(), "on {}", record.source_id);
         assert_eq!(
             recognizer.consumed(),
@@ -97,11 +95,18 @@ fn corpus_path_reports_dead_state() {
     // recognizer that dies on '(' (present in every gold query via `.all()` /
     // `tableReference(`), so the only failable path is exercised on real data.
     const TARGET: u8 = b'(';
-    let record = load_gold(&corpus_path())
-        .expect("open corpus")
-        .filter_map(Result::ok)
-        .find(|record| record.pure_text.as_bytes().contains(&TARGET))
-        .expect("a gold record containing '('");
+    // Propagate load errors rather than `filter_map(Result::ok)`-ing them away:
+    // a malformed/IO-error record must fail the test, not be silently skipped
+    // over on the way to the target — otherwise corpus corruption could pass.
+    let mut target = None;
+    for item in load_gold(&corpus_path()).expect("open corpus") {
+        let record = item.expect("every gold record must parse");
+        if record.pure_text.as_bytes().contains(&TARGET) {
+            target = Some(record);
+            break;
+        }
+    }
+    let record = target.expect("a gold record containing '('");
     let bytes = record.pure_text.as_bytes();
     let expected_offset = bytes
         .iter()

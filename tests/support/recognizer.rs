@@ -35,8 +35,8 @@ pub trait ByteRecognizer {
 
 /// Grammar-free recognizer: accepts every byte, never dies, always complete.
 ///
-/// It tracks only how many bytes it has consumed, so assertions have something
-/// real to check (a no-op stub would be mutation-invisible).
+/// It tracks only how many bytes it has consumed, so a caller can assert
+/// byte-consumption progress (via [`StubDecoder::consumed`]).
 #[derive(Debug, Default)]
 pub struct StubDecoder {
     consumed: usize,

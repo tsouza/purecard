@@ -80,7 +80,9 @@ const LEGEND_COMPOSE_FILE: &str = "corpus/legend-stack/docker-compose.yml";
 /// # Errors
 ///
 /// Returns the test failure if the tests fail; otherwise a teardown failure if
-/// `docker compose down` fails.
+/// `docker compose down` fails. If *both* fail, the test failure is returned
+/// with the teardown failure attached as context — a leftover-container failure
+/// is never silently dropped, since surfacing it is the whole point.
 pub fn test_legend() -> Result<()> {
     run(
         "docker",
@@ -89,8 +91,13 @@ pub fn test_legend() -> Result<()> {
     // Capture, do NOT `?`-return: teardown must run regardless of the outcome.
     let tested = run("cargo", &["nextest", "run", "--features", "legend"]);
     let torn_down = run("docker", &["compose", "-f", LEGEND_COMPOSE_FILE, "down"]);
-    tested?;
-    torn_down
+    match (tested, torn_down) {
+        (Err(test_err), Err(teardown_err)) => Err(test_err.context(format!(
+            "legend tests failed AND stack teardown failed (containers may be left running): {teardown_err:#}"
+        ))),
+        (Err(test_err), Ok(())) => Err(test_err),
+        (Ok(()), teardown) => teardown,
+    }
 }
 
 /// The minimum acceptable line-coverage percentage. Enforced as a hard floor so
@@ -224,6 +231,12 @@ const CORE_MANIFEST: &str = "Cargo.toml";
 /// enforces (distinct from `[dev-dependencies]` / `[workspace.dependencies]`).
 const CORE_DEPS_TABLE: &str = "[dependencies]";
 
+/// Header prefix of a per-dependency sub-table (`[dependencies.serde]`). This is
+/// TOML's other spelling for a core dependency — a `[dependencies.<name>]` table
+/// declares `<name>` just as a `<name> = …` line in `[dependencies]` does — so
+/// the gate must treat it as a runtime dependency, not skip past it.
+const CORE_DEPS_SUBTABLE_PREFIX: &str = "[dependencies.";
+
 /// Packaged-path prefixes the published crate must never ship: the oracle
 /// harness (`tests/`) and the gold corpus (`corpus/`) are dev-only.
 const NON_CORE_PACKAGE_PREFIXES: &[&str] = &["tests/", "corpus/"];
@@ -290,14 +303,23 @@ pub fn check_core_deplight() -> Result<()> {
 /// A hand scan in the style of [`release_plz_override_names`] rather than a TOML
 /// dependency: the check only needs to know whether that one table's body holds
 /// any entry, so it walks lines from the table header to the next `[table]`,
-/// skipping comments and blanks. A dependency line is `name = …` or
-/// `name.workspace = …`; the entry name is the token before the first `=` or `.`.
+/// skipping comments and blanks. It counts both TOML spellings of a core
+/// dependency: an inline entry under `[dependencies]` (`name = …` /
+/// `name.workspace = …`, the token before the first `=` or `.`) **and** a
+/// per-dependency sub-table header `[dependencies.<name>]` — the latter declares
+/// `<name>` too, so skipping it would let a runtime dep slip past the gate.
 fn core_dependency_entries(toml_src: &str) -> Vec<String> {
     let mut entries = Vec::new();
     let mut in_deps = false;
     for line in toml_src.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
+            // A `[dependencies.<name>]` header is itself a dependency
+            // declaration; record `<name>` and leave `in_deps` false so the
+            // sub-table's own fields (`version`, `features`, …) aren't miscounted.
+            if let Some(name) = subtable_dependency_name(trimmed) {
+                entries.push(name);
+            }
             in_deps = trimmed == CORE_DEPS_TABLE;
             continue;
         }
@@ -312,6 +334,15 @@ fn core_dependency_entries(toml_src: &str) -> Vec<String> {
         }
     }
     entries
+}
+
+/// Extract `<name>` from a `[dependencies.<name>]` sub-table header, or `None`
+/// for any other table header. The name is the segment between the prefix and
+/// the next `.` or the closing `]`.
+fn subtable_dependency_name(header: &str) -> Option<String> {
+    let rest = header.strip_prefix(CORE_DEPS_SUBTABLE_PREFIX)?;
+    let name = rest.split(['.', ']']).next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// Public library crates whose API surface is snapshotted.
@@ -617,6 +648,25 @@ ureq = \"3\"
 serde = \"1\"
 ";
         assert!(core_dependency_entries(src).is_empty());
+    }
+
+    #[test]
+    fn core_dependency_entries_detects_subtable_form() {
+        // `[dependencies.serde]` is a valid TOML spelling of a core dependency;
+        // the gate must catch it, not walk past the header. Its own fields
+        // (`version`, `features`) are the sub-table's body, not new deps.
+        let src = "\
+[package]
+name = \"purecard\"
+
+[dependencies.serde]
+version = \"1\"
+features = [\"derive\"]
+
+[dev-dependencies]
+ureq = \"3\"
+";
+        assert_eq!(core_dependency_entries(src), ["serde"]);
     }
 
     #[test]
