@@ -74,7 +74,13 @@ impl Trie {
                     let child = self.nodes.len() as u32;
                     self.nodes.push(Node::default());
                     let edges = &mut self.nodes[node].next;
-                    let at = edges.partition_point(|&(b, _)| b < byte);
+                    // This arm runs only when `byte` is absent from `edges`, so the
+                    // search never hits `Ok`; the `Err` index is the sorted
+                    // insertion point. Reusing the same key projection as `child`
+                    // keeps insert and lookup ordering in lockstep (DRY).
+                    let at = edges
+                        .binary_search_by_key(&byte, |&(b, _)| b)
+                        .unwrap_or_else(|at| at);
                     edges.insert(at, (byte, child));
                     child as usize
                 }
@@ -159,6 +165,18 @@ mod tests {
         // `id` is a name; a following `.` (a boundary byte) means the name is done.
         assert_eq!(walk(&trie, trie.root(), b"id."), Walk::Complete);
         assert_eq!(walk(&trie, trie.root(), b"id("), Walk::Complete);
+    }
+
+    #[test]
+    fn a_strict_prefix_then_a_boundary_byte_diverges_not_completes() {
+        // `count` is a strict prefix of `country*` but is *not* itself a legal name
+        // (a non-terminal node). A following boundary byte `.` must therefore
+        // Diverge — the name never completed. This pins `is_terminal` reporting the
+        // real terminal flag: were it to always answer `true`, this boundary byte
+        // would wrongly read as `Complete`.
+        let trie = member_trie();
+        assert_eq!(walk(&trie, trie.root(), b"count."), Walk::Diverge);
+        assert_eq!(walk(&trie, trie.root(), b"countr("), Walk::Diverge);
     }
 
     #[test]

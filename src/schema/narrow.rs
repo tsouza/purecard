@@ -532,4 +532,50 @@ mod tests {
         );
         assert_eq!(first, fresh, "clearing the cache rebuilds the same mask");
     }
+
+    #[test]
+    fn clear_drops_stale_stream_local_column_masks() {
+        // A `Column` key pins the mask on the emitted-column *set*, which is
+        // stream-local (both streams below emit one column, so both hit key
+        // `Column(1)`). On session reset `clear` must drop the first stream's set,
+        // or the second stream's different column returns the stale mask. A no-op
+        // `clear` returns the first stream's `'cnt'` mask and fails here.
+        let grammar = CompiledGrammar::compile(vocab(&[b"'cnt'", b"'ghost'"]));
+        let mut cache = NarrowCache::new();
+        let pos = L2Position::Column;
+
+        let mut first = BitMask::with_len(grammar.mask_len());
+        narrow_into(
+            &mut first,
+            &mut cache,
+            &schema(),
+            &pos,
+            b"",
+            &["cnt".to_owned()],
+            grammar.vocab(),
+            grammar.eos_bit(),
+        );
+        assert!(
+            bit(&first, 0) && !bit(&first, 1),
+            "the first stream keeps 'cnt' and masks 'ghost'"
+        );
+
+        cache.clear();
+
+        let mut second = BitMask::with_len(grammar.mask_len());
+        narrow_into(
+            &mut second,
+            &mut cache,
+            &schema(),
+            &pos,
+            b"",
+            &["ghost".to_owned()],
+            grammar.vocab(),
+            grammar.eos_bit(),
+        );
+        assert!(
+            bit(&second, 1) && !bit(&second, 0),
+            "after clear the second stream keeps 'ghost' and masks 'cnt' (a no-op clear would return the stale 'cnt' mask)"
+        );
+    }
 }
