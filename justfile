@@ -84,10 +84,12 @@ test-chaos:
     cargo nextest run --workspace --all-features -E 'test(/chaos/)'
 
 # Mutation testing — verifies the test suite actually catches regressions.
-# Runs in-place (mutates the checked-out tree directly, reverting after each
-# trial) for speed on both CI's disposable checkout and a developer's own tree.
+# Copy-mode (cargo-mutants' default) builds each mutant in a scratch copy, so an
+# interrupted run can never leave the working tree mutated — unlike `--in-place`,
+# which a killed CI job leaves dirty. CI parallelises the run via
+# CARGO_MUTANTS_JOBS (see ci.yml); locally, pass `-j` or scope with `-f` for speed.
 test-mutation:
-    cargo mutants --workspace --in-place
+    cargo mutants --workspace
 
 # ---------------------------------------------------------------------------
 # Fuzzing & benchmarking

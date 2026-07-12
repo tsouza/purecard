@@ -142,7 +142,8 @@ jobs:
   mutation:
     name: mutation
     needs: changes
-    # Mutation runs are expensive (~8 min). Run them at MERGE TIME — the merge
+    # Mutation runs are expensive (~10 min parallelised; see CARGO_MUTANTS_JOBS
+    # and timeout-minutes below). Run them at MERGE TIME — the merge
     # queue (`merge_group`) and pushes to `main` — not on every PR iteration, so
     # a PR's inner loop isn't gated on the slowest job. Mutation gates the trunk:
     # with a merge queue it runs before the change lands; without one it runs on
@@ -152,10 +153,19 @@ jobs:
       needs.changes.outputs.code == 'true' &&
       (github.event_name == 'merge_group' || github.event_name == 'push')
     runs-on: ubuntu-latest
+    # Bound the run so a hung mutant fails cleanly instead of riding the runner's
+    # edge (the serial ~18 min run was killed mid-queue once); comfortably above
+    # the parallelised wall-clock below.
+    timeout-minutes: 30
     env:
       SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
       CARGO_INCREMENTAL: "0"
+      # Run 2 mutants in parallel. ubuntu-latest has 4 vCPUs and each mutant's own
+      # cargo build already threads across them, so 2 concurrent scenarios is the
+      # sweet spot (cargo-mutants oversubscribes past that) — it roughly halves the
+      # serial ~18 min wall-clock that rode the job's edge and got signalled.
+      CARGO_MUTANTS_JOBS: "2"
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
