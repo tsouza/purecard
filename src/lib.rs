@@ -39,38 +39,50 @@
 //!
 //! // A host vocabulary of whole tokens (token id → raw bytes) that expresses the
 //! // query `|X.all()->take(1)`; `from_spec` compiles the emitted-Pure grammar.
+//! // The ids are named so reordering the vocabulary can't silently point a later
+//! // `accept_token` at the wrong token.
+//! const SOURCE: u32 = 0; // a complete source expression, `|X.all()`
+//! const OPEN: u32 = 1; //   a step opening a call, `->take(`
+//! const INT: u32 = 2; //    an integer literal, `1`
+//! const CLOSE: u32 = 3; //  the closer, `)`
+//! const EOS: u32 = 4; //    the reserved EOS id, one past the last token
 //! let vocab = Vocab::from_byte_tokens(
 //!     vec![
-//!         b"|X.all()".to_vec(), // 0: a complete source expression
-//!         b"->take(".to_vec(),  // 1: a step opening a call
-//!         b"1".to_vec(),        // 2: an integer literal
-//!         b")".to_vec(),        // 3: the closer
+//!         b"|X.all()".to_vec(),
+//!         b"->take(".to_vec(),
+//!         b"1".to_vec(),
+//!         b")".to_vec(),
 //!     ],
-//!     4,
+//!     EOS,
 //! );
 //! let grammar = CompiledGrammar::from_spec("", vocab);
 //!
 //! // L1 (syntactic) session: the source token is admissible from the start; once
 //! // accepted it is itself a complete query, and opening a call re-opens the stream.
 //! let mut plain = DecoderSession::new(&grammar);
-//! assert!(plain.allowed_mask().test(0), "the source token is admissible at Start");
-//! plain.accept_token(0)?;                        // `Result<(), DecodeError>`
+//! assert!(plain.allowed_mask().test(SOURCE), "the source token is admissible at Start");
+//! plain.accept_token(SOURCE)?;                   // `Result<(), DecodeError>`
 //! assert!(plain.is_complete(), "`|X.all()` is itself a complete query");
-//! plain.accept_token(1)?;                        // open `->take(`
+//! plain.accept_token(OPEN)?;                     // open `->take(`
 //! assert!(!plain.is_complete(), "an open call is not complete");
-//! plain.accept_token(2)?;                        // `1`
-//! plain.accept_token(3)?;                        // `)`
+//! plain.accept_token(INT)?;                      // `1`
+//! plain.accept_token(CLOSE)?;                    // `)`
 //! assert!(plain.is_complete(), "the closed `|X.all()->take(1)` is complete");
 //! plain.reset();
 //! assert!(!plain.is_complete(), "reset returns to a fresh, incomplete stream");
 //!
-//! // L2 (schema-consistent) session: the mask is additionally narrowed to the
-//! // schema-legal terminals at each identifier/operand position. L2 only ever
-//! // *narrows*, so the same source token still survives and the stream completes.
+//! // L2 (schema-consistent) session: the mask is additionally intersected with the
+//! // schema-legal terminals at each identifier/operand position. This example shows
+//! // the L2 *API* and the structural **L2 ⊆ L1** invariant — L2 only ever narrows,
+//! // so a token L1 admits (here the source) is never *added* and, being
+//! // schema-legal, still survives. That narrowing genuinely *removes* phantom
+//! // classes/properties and type-mismatched operands is proven by the counterfactual
+//! // suite (`tests/l2_precision.rs`) and, against fragmented BPE tokens, by
+//! // `tests/bpe_split_soundness.rs` — not re-litigated in this doc example.
 //! let schema = Schema::from_json(r#"{"db_id": "d", "db_path": "model::Db", "classes": {}}"#)?;
 //! let mut sess = DecoderSession::with_schema(&grammar, schema);
-//! assert!(sess.allowed_mask().test(0), "L2 only narrows; the L1 source token survives");
-//! sess.accept_token(0)?;
+//! assert!(sess.allowed_mask().test(SOURCE), "L2 only narrows; the L1 source token survives");
+//! sess.accept_token(SOURCE)?;
 //! assert!(sess.is_complete());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
