@@ -419,7 +419,7 @@ fn is_ws(byte: u8) -> bool {
     WS.contains(&byte)
 }
 
-const fn is_ident_start(byte: u8) -> bool {
+pub(crate) const fn is_ident_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_'
 }
 
@@ -1051,6 +1051,14 @@ impl Pda {
     #[must_use]
     pub fn stack_top(&self) -> Option<Frame> {
         self.stack.last().copied()
+    }
+
+    /// The whole frame stack, bottom-to-top — the seed the L2 scope tracker's
+    /// lexeme-boundary walk re-drives [`step`] over so an interior closer inside a
+    /// merged token routes through the matching frame (a `)` needs its `Paren`).
+    /// Read-only: the walk clones it into a scratch, never touching the live PDA.
+    pub(crate) fn stack(&self) -> &[Frame] {
+        &self.stack
     }
 
     /// Whether replaying `bytes` from the live configuration keeps the automaton

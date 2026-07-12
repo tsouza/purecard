@@ -15,8 +15,25 @@
 
 use std::collections::HashMap;
 
-use crate::grammar::pda::{LexKind, State};
+use crate::grammar::pda::{Frame, LexKind, Pda, State, Step, is_ident_start, is_ident_tail, step};
 use crate::schema::model::{Resolved, Schema, TypeClass};
+
+/// Whether `a`, `b` begin one of the two-byte operators the grammar recognises
+/// (`-> == != <= >= && ||`). A structural-gap walk munches these whole so an
+/// operator never fragments into mis-classified single bytes (`>` alone reads as
+/// a comparison).
+const fn is_two_byte_op(a: u8, b: u8) -> bool {
+    matches!(
+        (a, b),
+        (b'-', b'>')
+            | (b'=', b'=')
+            | (b'!', b'=')
+            | (b'<', b'=')
+            | (b'>', b'=')
+            | (b'&', b'&')
+            | (b'|', b'|')
+    )
+}
 
 /// A lexical token, classified from its raw bytes — the granularity the tracker
 /// and narrower reason over. Whole identifiers/classpaths, string/number/date
@@ -27,8 +44,10 @@ pub(crate) enum Lexeme {
     Ws,
     /// An identifier or `::`-joined classpath; carries its text.
     Ident(String),
-    /// A single-quoted string literal; carries its unescaped content.
-    Str(String),
+    /// A single-quoted string literal; carries its unescaped content as raw bytes
+    /// (byte-exact, so the N6 column key never desyncs from the trie through a
+    /// lossy UTF-8 round-trip).
+    Str(Vec<u8>),
     /// A numeric literal.
     Number,
     /// A `%`-prefixed date/time literal.
@@ -91,13 +110,24 @@ pub(crate) fn classify(bytes: &[u8]) -> Lexeme {
 
 /// Strip the surrounding single quotes and undouble `''` from a string literal's
 /// raw bytes, yielding its logical content (§5.5 quote doubling).
-fn unquote(bytes: &[u8]) -> String {
+fn unquote(bytes: &[u8]) -> Vec<u8> {
     let inner = bytes
         .strip_prefix(b"'")
         .and_then(|rest| rest.strip_suffix(b"'"))
         .unwrap_or(bytes);
-    let text = String::from_utf8_lossy(inner);
-    text.replace("''", "'")
+    // Undouble `''` -> `'` on the raw bytes — byte-exact, no UTF-8 round-trip that
+    // a `�` could corrupt.
+    let mut out = Vec::with_capacity(inner.len());
+    let mut i = 0;
+    while i < inner.len() {
+        out.push(inner[i]);
+        i += if inner[i] == b'\'' && inner.get(i + 1) == Some(&b'\'') {
+            2
+        } else {
+            1
+        };
+    }
+    out
 }
 
 /// The schema-consistency constraint that applies at the current position — the
@@ -212,8 +242,9 @@ pub(crate) struct ScopeTracker {
     /// Have we passed a *closed* establishing op (a named relation exists)?
     rel_explicit: bool,
     /// Every string literal emitted so far — the N6 legal column set (a superset,
-    /// so a real reference to a previously-emitted name is never masked).
-    emitted_strings: Vec<String>,
+    /// so a real reference to a previously-emitted name is never masked). Stored as
+    /// raw bytes, byte-exact against the trie's `quote` key.
+    emitted_strings: Vec<Vec<u8>>,
 }
 
 impl ScopeTracker {
@@ -222,56 +253,162 @@ impl ScopeTracker {
         Self::default()
     }
 
-    /// Advance the scope machine by one committed token, given its raw `bytes`,
-    /// the PDA `pre_state`/`post_state` bracketing the fold, and the `schema`.
+    /// Advance the scope machine by one committed token, given its raw `bytes`, the
+    /// pre-fold PDA configuration `pre` (state **and** stack), and the `schema`.
     ///
-    /// Called from [`accept_token`](crate::DecoderSession::accept_token) after the
-    /// token commits, so scope moves in lockstep with the automaton. A token that
-    /// stays inside an identifier/string lexeme (`post_state` is still in that
-    /// lexeme) is **buffered**, not dispatched, so a BPE-fragmented name resolves
-    /// and narrows as one whole lexeme (§6.4, M3/B1). The buffered lexeme is
-    /// dispatched — under the same scope logic a whole-token stream uses — the
-    /// moment a token leaves it.
-    pub(crate) fn observe(
-        &mut self,
-        bytes: &[u8],
-        pre_state: State,
-        post_state: State,
-        schema: &Schema,
-    ) {
-        let post_kind = post_state.lexeme_kind();
-        // Continue an open accumulation while the token stays in the same lexeme.
-        if let Some(pending) = self.pending.as_mut()
-            && post_kind == Some(pending.kind)
-        {
-            pending.buf.extend_from_slice(bytes);
-            return;
-        }
-        // The token left any open lexeme: flush the buffered lexeme as one logical
-        // token before processing this one.
-        if let Some(done) = self.pending.take() {
+    /// Called from [`accept_token`](crate::DecoderSession::accept_token) as the
+    /// token commits, so scope moves in lockstep with the automaton. A byte-level
+    /// BPE token may straddle several lexeme boundaries (`'MaxRevenue')`, `.count`,
+    /// `('`): the walk re-drives [`step`] read-only over the token, splitting it at
+    /// each interior lexeme boundary and driving every constituent lexeme through
+    /// the same per-lexeme logic a lexeme-granular stream uses (constitution §4,
+    /// DRY). A run still open at the token's end (an identifier/string arriving in
+    /// fragments) is buffered into [`Pending`] and resolved when a later token
+    /// closes it (§6.4, B1/M3); a run that closes inside the token is dispatched at
+    /// once, so a buried `.`/`(` fires `on_dot`/`on_open` (H2) and a merged closing
+    /// quote records the true column bytes (H1). The seed stack lets an interior
+    /// closer (`)`) route through the matching frame rather than dying.
+    pub(crate) fn observe(&mut self, bytes: &[u8], pre: &Pda, schema: &Schema) {
+        let mut state = pre.state();
+        let mut stack: Vec<Frame> = pre.stack().to_vec();
+        // The first segment continues a lexeme buffered before this token only when
+        // the pre-state sits inside that pending lexeme's own class.
+        let mut continuing = self
+            .pending
+            .as_ref()
+            .is_some_and(|p| state.lexeme_kind() == Some(p.kind));
+        // The pre-state at the current segment's first byte — the anchor its scope
+        // transition dispatches under (a continuation inherits the buffered anchor).
+        let mut seg_anchor = if continuing {
+            self.pending.as_ref().map_or(state, |p| p.anchor)
+        } else {
+            state
+        };
+        let mut seg_start = 0usize;
+        // A pending that this token does not continue would be an unclosed lexeme L1
+        // never admits; flush it defensively so no buffer leaks across tokens.
+        if !continuing && let Some(done) = self.pending.take() {
             self.dispatch_token(&done.buf, done.anchor, schema);
         }
-        // Open a fresh accumulation for a lexeme this token enters; otherwise it is
-        // a whole structural/operator token, dispatched immediately.
-        match post_kind {
-            Some(kind) => {
-                // The trie rules (source/member/column) persist across sub-tokens;
-                // T1's operand lever (`ReValue`) is a whole-token literal-class
-                // test, so its continuation sub-tokens pass through untouched.
-                let pos = match self.opening_position(pre_state) {
-                    L2Position::ReValue(_) => L2Position::None,
-                    narrowed => narrowed,
-                };
-                self.pending = Some(Pending {
-                    kind,
-                    buf: bytes.to_vec(),
-                    anchor: pre_state,
-                    pos,
-                });
+
+        for i in 0..bytes.len() {
+            let before = state;
+            let prev_kind = before.lexeme_kind();
+            let top = stack.last().copied();
+            state = match step(before, top, bytes[i]) {
+                Step::Next(s) => s,
+                Step::Push(frame, s) => {
+                    stack.push(frame);
+                    s
+                }
+                Step::Pop(s) => {
+                    stack.pop();
+                    s
+                }
+                // The token was pre-validated by L1's fold, so no byte dies here.
+                Step::Dead => return,
+            };
+            let cur_kind = state.lexeme_kind();
+
+            match prev_kind {
+                // A lexeme closed via delegation at byte `i`: that byte is the
+                // boundary that ended it (not part of it). Dispatch the lexeme
+                // (prepending any cross-token buffer), then reopen a segment at `i`.
+                Some(k) if cur_kind != Some(k) => {
+                    self.emit_lexeme(&bytes[seg_start..i], seg_anchor, continuing, schema);
+                    continuing = false;
+                    seg_start = i;
+                    seg_anchor = before;
+                }
+                // Still inside the same lexeme — keep accumulating.
+                Some(_) => {}
+                // In a structural gap; when a lexeme opens at byte `i`, flush the
+                // gap that preceded it and start the lexeme segment here.
+                None => {
+                    if cur_kind.is_some() {
+                        self.flush_gap(&bytes[seg_start..i], seg_anchor, schema);
+                        seg_start = i;
+                        seg_anchor = before;
+                        continuing = false;
+                    }
+                }
             }
-            None => self.dispatch_token(bytes, pre_state, schema),
         }
+
+        // The trailing segment: an open lexeme is buffered (resolved when a later
+        // token closes it); a structural gap is dispatched whole.
+        match state.lexeme_kind() {
+            Some(kind) => self.buffer_trailing(kind, &bytes[seg_start..], seg_anchor, continuing),
+            None => self.flush_gap(&bytes[seg_start..], seg_anchor, schema),
+        }
+    }
+
+    /// Dispatch a closed lexeme through the per-token scope logic, prepending the
+    /// cross-token [`Pending`] buffer when this run continues one. A `Str` lexeme
+    /// arrives with both quotes, so [`classify`]/[`unquote`] records its byte-exact
+    /// content into `emitted_strings` (H1).
+    fn emit_lexeme(&mut self, seg: &[u8], anchor: State, continuing: bool, schema: &Schema) {
+        if continuing && let Some(done) = self.pending.take() {
+            let mut full = done.buf;
+            full.extend_from_slice(seg);
+            self.dispatch_token(&full, done.anchor, schema);
+            return;
+        }
+        self.dispatch_token(seg, anchor, schema);
+    }
+
+    /// Split a structural gap (operators, punctuation, and — on the block-query
+    /// `let` path — a bare keyword identifier) into its constituent tokens and
+    /// dispatch each. Maximal munch mirrors [`classify`]'s granularity so a
+    /// multi-byte operator (`->`, `==`) stays one token rather than fragmenting
+    /// into mis-classified single bytes. Every gap token shares the gap's anchor
+    /// pre-state; only `|` (`on_pipe`) and the `let`-path ident read it, and both
+    /// classify identically from that anchor.
+    fn flush_gap(&mut self, gap: &[u8], anchor: State, schema: &Schema) {
+        let mut j = 0;
+        while j < gap.len() {
+            let b = gap[j];
+            if b.is_ascii_whitespace() {
+                j += 1;
+            } else if j + 1 < gap.len() && is_two_byte_op(b, gap[j + 1]) {
+                self.dispatch_token(&gap[j..j + 2], anchor, schema);
+                j += 2;
+            } else if is_ident_start(b) {
+                let mut k = j + 1;
+                while k < gap.len() && is_ident_tail(gap[k]) {
+                    k += 1;
+                }
+                self.dispatch_token(&gap[j..k], anchor, schema);
+                j = k;
+            } else {
+                self.dispatch_token(&gap[j..j + 1], anchor, schema);
+                j += 1;
+            }
+        }
+    }
+
+    /// Buffer a lexeme still open at the token's end into [`Pending`], resolved and
+    /// narrowed once a later token closes it (§6.4, B1/M3). A continuation extends
+    /// the existing buffer; a fresh run opens a new one, stamping the rule its
+    /// anchor establishes (T1's `ReValue` lever is a whole-token literal-class
+    /// test, so its continuation sub-tokens pass through untouched).
+    fn buffer_trailing(&mut self, kind: LexKind, seg: &[u8], anchor: State, continuing: bool) {
+        if continuing {
+            if let Some(pending) = self.pending.as_mut() {
+                pending.buf.extend_from_slice(seg);
+            }
+            return;
+        }
+        let pos = match self.opening_position(anchor) {
+            L2Position::ReValue(_) => L2Position::None,
+            narrowed => narrowed,
+        };
+        self.pending = Some(Pending {
+            kind,
+            buf: seg.to_vec(),
+            anchor,
+            pos,
+        });
     }
 
     /// Apply one whole lexeme's scope transition, given its raw `bytes` and the
@@ -528,7 +665,7 @@ impl ScopeTracker {
     }
 
     /// The N6 legal column set: every string literal emitted so far.
-    pub(crate) fn emitted_columns(&self) -> &[String] {
+    pub(crate) fn emitted_columns(&self) -> &[Vec<u8>] {
         &self.emitted_strings
     }
 }
@@ -561,13 +698,12 @@ mod tests {
         let mut pda = Pda::new();
         let mut tracker = ScopeTracker::new();
         for token in tokens {
-            let pre = pda.state();
+            let pre = pda.clone();
             for &byte in *token {
                 pda.advance(byte)
                     .expect("test tokens are valid emitted Pure");
             }
-            let post = pda.state();
-            tracker.observe(token, pre, post, &schema);
+            tracker.observe(token, &pre, &schema);
         }
         (tracker, pda)
     }
@@ -598,9 +734,9 @@ mod tests {
 
     #[test]
     fn classify_unquotes_and_undoubles_a_string_literal() {
-        assert_eq!(classify(b"'ab'"), Lexeme::Str("ab".to_owned()));
+        assert_eq!(classify(b"'ab'"), Lexeme::Str(b"ab".to_vec()));
         // A doubled quote collapses to one (§5.5).
-        assert_eq!(classify(b"'a''b'"), Lexeme::Str("a'b".to_owned()));
+        assert_eq!(classify(b"'a''b'"), Lexeme::Str(b"a'b".to_vec()));
     }
 
     #[test]
@@ -659,6 +795,72 @@ mod tests {
             tracker.position(pda.state()),
             L2Position::ReValue(TypeClass::Str)
         );
+    }
+
+    #[test]
+    fn a_merged_closing_quote_records_the_true_column_bytes() {
+        // H1: a string literal fused with its trailing `)` into one token
+        // (`'ab')`) must still record the byte-exact content `ab` in the emitted
+        // set — not the garbage `'ab')` the whole-token `unquote` produced. The
+        // buried `)` must also fire `on_close` (the filter paren balances).
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"$", b"x",
+            b".", b"s", b"==", b"'ab')",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(
+            tracker.emitted_columns(),
+            [b"ab".to_vec()],
+            "the merged closing quote records `ab`, byte-exact"
+        );
+        // The `)` buried in the token closed the filter paren: back at top level.
+        assert_eq!(pda.state(), State::AfterValue);
+        assert!(pda.stack_top().is_none(), "the filter paren is closed");
+    }
+
+    #[test]
+    fn a_doubled_quote_in_a_merged_close_undoubles_byte_exact() {
+        // `'a''b')` — a doubled `''` inside the literal collapses to one `'`, and
+        // the trailing `)` is not part of the recorded content.
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"$", b"x",
+            b".", b"s", b"==", b"'a''b')",
+        ];
+        let (tracker, _pda) = run(tokens);
+        assert_eq!(tracker.emitted_columns(), [b"a'b".to_vec()]);
+    }
+
+    #[test]
+    fn a_buried_navigation_dot_still_fires_member_narrowing() {
+        // H2: a `.` fused to the leading identifier byte (`.n`) must still fire
+        // `on_dot`, arming the member position on the bound var's class — else the
+        // buried dot would silently disable N1 (pass-through) rather than narrow.
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"$", b"x",
+            b".n",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::InIdent, "landed mid-identifier `n`");
+        assert_eq!(
+            tracker.position(pda.state()),
+            L2Position::Member("A".to_owned()),
+            "the buried dot armed N1 on A for the buffered member"
+        );
+    }
+
+    #[test]
+    fn a_multi_byte_operator_swallowed_in_a_gap_is_not_split() {
+        // A structural gap fusing a value's tail into `->` (`n->`, then a step) must
+        // munch `->` whole (an Arrow), not a stray `>` that would read as a
+        // comparison and mis-arm T1. Feeding `n->` then a fresh nav must resolve the
+        // navExpr, not leave a dangling comparison arming.
+        let numeric: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"$", b"x",
+            b".", b"n", b"==", b"5",
+        ];
+        let (tracker, pda) = run(numeric);
+        // After the operand `5`, T1 arming is spent; the operand position is clear.
+        assert_eq!(tracker.position(pda.state()), L2Position::None);
     }
 
     #[test]

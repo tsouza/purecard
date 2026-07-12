@@ -16,7 +16,7 @@ use crate::grammar::pda::is_ident_tail;
 
 /// A byte trie over a set of legal completion strings (member names, source
 /// classpaths, quoted column strings). Node `0` is the root.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Trie {
     nodes: Vec<Node>,
 }
@@ -24,7 +24,7 @@ pub(crate) struct Trie {
 /// One trie node: its outgoing edges (sorted by byte for binary search — dense
 /// alphabets never blow up to a 256-wide array) and whether a legal name ends
 /// here.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Node {
     next: Vec<(u8, u32)>,
     terminal: bool,
