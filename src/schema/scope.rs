@@ -116,15 +116,17 @@ fn unquote(bytes: &[u8]) -> Vec<u8> {
         .and_then(|rest| rest.strip_suffix(b"'"))
         .unwrap_or(bytes);
     // Undouble `''` -> `'` on the raw bytes — byte-exact, no UTF-8 round-trip that
-    // a `�` could corrupt.
+    // a `�` could corrupt. Consuming the slice head each step (dropping the paired
+    // second quote on a match) keeps the walk advancing without an index cursor to
+    // mutate into a non-terminating loop.
     let mut out = Vec::with_capacity(inner.len());
-    let mut i = 0;
-    while i < inner.len() {
-        out.push(inner[i]);
-        i += if inner[i] == b'\'' && inner.get(i + 1) == Some(&b'\'') {
-            2
+    let mut rest = inner;
+    while let Some((&b, tail)) = rest.split_first() {
+        out.push(b);
+        rest = if b == b'\'' && tail.first() == Some(&b'\'') {
+            &tail[1..]
         } else {
-            1
+            tail
         };
     }
     out
@@ -365,24 +367,30 @@ impl ScopeTracker {
     /// pre-state; only `|` (`on_pipe`) and the `let`-path ident read it, and both
     /// classify identically from that anchor.
     fn flush_gap(&mut self, gap: &[u8], anchor: State, schema: &Schema) {
-        let mut j = 0;
-        while j < gap.len() {
-            let b = gap[j];
+        let mut rest = gap;
+        while let Some((&b, tail)) = rest.split_first() {
             if b.is_ascii_whitespace() {
-                j += 1;
-            } else if j + 1 < gap.len() && is_two_byte_op(b, gap[j + 1]) {
-                self.dispatch_token(&gap[j..j + 2], anchor, schema);
-                j += 2;
+                rest = tail;
+            } else if let [x, y, ..] = rest
+                && is_two_byte_op(*x, *y)
+            {
+                self.dispatch_token(&rest[..2], anchor, schema);
+                rest = &rest[2..];
             } else if is_ident_start(b) {
-                let mut k = j + 1;
-                while k < gap.len() && is_ident_tail(gap[k]) {
-                    k += 1;
-                }
-                self.dispatch_token(&gap[j..k], anchor, schema);
-                j = k;
+                // `b` is an ident-start (⊆ ident-tail), so a correct scan takes at
+                // least it; `.max(1)` makes that a hard floor, so the cursor advances
+                // every iteration even if `is_ident_tail` misbehaves — the loop can
+                // never spin on a zero-width token.
+                let n = rest
+                    .iter()
+                    .take_while(|&&c| is_ident_tail(c))
+                    .count()
+                    .max(1);
+                self.dispatch_token(&rest[..n], anchor, schema);
+                rest = &rest[n..];
             } else {
-                self.dispatch_token(&gap[j..j + 1], anchor, schema);
-                j += 1;
+                self.dispatch_token(&rest[..1], anchor, schema);
+                rest = tail;
             }
         }
     }
@@ -890,5 +898,26 @@ mod tests {
         // operand position stays unconstrained (pass-through).
         let (tracker, pda) = run(&[b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"("]);
         assert_eq!(tracker.position(pda.state()), L2Position::None);
+    }
+
+    #[test]
+    fn unquote_undoubling_pins_its_scan_indices() {
+        // These two literals pin the undouble loop's index math, which `'ab'` /
+        // `'a''b'` leave unconstrained. `''''` is a doubled quote alone: only a
+        // scan that skips exactly the *doubled* pair (not any quote, not the wrong
+        // count) collapses it to one. `''x'` carries a lone quote followed by more
+        // content: the "look at the *next* byte" check must not read the current one.
+        assert_eq!(classify(b"''''"), Lexeme::Str(b"'".to_vec()));
+        assert_eq!(classify(b"''x'"), Lexeme::Str(b"'x".to_vec()));
+    }
+
+    #[test]
+    fn an_identifier_split_across_tokens_continues_one_buffer() {
+        // `filter` arrives as two tokens `fil` + `ter`. The second token's pre-state
+        // is still mid-identifier, so it must *continue* the first token's pending
+        // buffer, not flush `fil` and start `ter` afresh. Only a correct cross-token
+        // continuation leaves the whole `filter` as the open narrowing prefix.
+        let (tracker, _) = run(&[b"|", b"A", b".", b"all", b"(", b")", b"->", b"fil", b"ter"]);
+        assert_eq!(tracker.narrow_prefix(), b"filter");
     }
 }
