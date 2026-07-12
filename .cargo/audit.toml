@@ -1,0 +1,9 @@
+# cargo-audit config. cargo-audit reads its ignore list here (it does NOT read
+# deny.toml — that governs the separate `cargo deny` gate).
+[advisories]
+# RUSTSEC-2024-0436: `paste` is unmaintained (informational, no known vulnerability).
+# It is a transitive dep of `tokenizers`, an OPTIONAL, feature-gated (`qwen-oracle`),
+# test-only dependency that never ships in the published core or the default build.
+# No upstream fix (tokenizers still pulls it); accepted for that isolated oracle tree
+# only. Mirrors the deny.toml ignore.
+ignore = ["RUSTSEC-2024-0436"]

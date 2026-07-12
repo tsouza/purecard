@@ -131,6 +131,33 @@ codspeed:
 test-legend:
     cargo xtask test-legend
 
+# The Qwen2.5-Coder tokenizer, pinned to an immutable model revision so local and
+# nightly (`qwen-oracle.yml`) runs are reproducible; keep in sync with that workflow's
+# QWEN_REVISION and bump deliberately. Named here (not inlined) so the revision and
+# cache path each have a single source in this file (constitution §4, no magic constants).
+qwen_revision := "c03e6d358207e414f1eca0bb1891e29f1db0e242"
+qwen_tokenizer := "target/qwen/tokenizer.json"
+
+# Real-Qwen L2 soundness oracle (on-demand / local, NOT a per-PR gate — it is
+# heavy: it fetches the real Qwen2.5-Coder tokenizer and replays the whole gold
+# corpus token-by-token through the real byte-level BPE). This is the gold-standard
+# check that L2 stays sound against the *actual* tokenizer merge boundaries — the
+# class the synthetic `bpe_split_soundness` reproducer approximates. `curl -z` fetches
+# the tokenizer into the gitignored `target/` cache only when it is absent or stale;
+# `--fail` makes an HTTP error abort instead of caching an error page as the tokenizer.
+# The lane compiles under the `qwen-oracle` feature (optional `tokenizers` dep). It also
+# runs nightly / on-demand via the `qwen-oracle.yml` GitHub Actions workflow.
+qwen-oracle:
+    curl -sSL --fail --create-dirs -z {{ qwen_tokenizer }} -o {{ qwen_tokenizer }} "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/resolve/{{ qwen_revision }}/tokenizer.json"
+    just qwen-oracle-run
+
+# The oracle test invocation itself — the single `just` entry point shared by the
+# local `qwen-oracle` recipe above and the nightly `qwen-oracle.yml` workflow, so CI
+# never hand-rolls `cargo` (constitution §2). Assumes the tokenizer already sits at
+# {{ qwen_tokenizer }} (the fetch is the caller's job; CI restores it from cache).
+qwen-oracle-run:
+    QWEN_TOKENIZER_JSON={{ qwen_tokenizer }} cargo test --features qwen-oracle --test qwen_soundness -- --nocapture
+
 # ---------------------------------------------------------------------------
 # Coverage, supply-chain & API-stability gates
 # ---------------------------------------------------------------------------
