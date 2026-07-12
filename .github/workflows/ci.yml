@@ -427,7 +427,7 @@ jobs:
   # must exist); `always()` so it also catches warnings in a job that failed.
   no-warnings:
     name: no-warnings (log sweep)
-    needs: [changes, check, coverage, mutation, supply-chain, api-stability, structural, docs, bench]
+    needs: [changes, check, coverage, mutation, mutation-pr, supply-chain, api-stability, structural, docs, bench]
     if: always()
     runs-on: ubuntu-latest
     permissions:
