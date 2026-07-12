@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use crate::grammar::pda::{Frame, LexKind, Pda, State, Step, is_ident_tail, step};
+use crate::grammar::pda::{Frame, LexKind, Pda, State, Step, is_ident_start, is_ident_tail, step};
 use crate::schema::model::{Resolved, Schema, TypeClass};
 
 /// Whether `a`, `b` begin one of the two-byte operators the grammar recognises
@@ -33,13 +33,6 @@ const fn is_two_byte_op(a: u8, b: u8) -> bool {
             | (b'&', b'&')
             | (b'|', b'|')
     )
-}
-
-/// Whether `byte` may start an identifier — the block-query `let` keyword and a
-/// classpath source both begin here, the only alphabetic runs a structural gap
-/// can hold.
-const fn is_ident_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_'
 }
 
 /// A lexical token, classified from its raw bytes — the granularity the tracker

@@ -419,7 +419,7 @@ fn is_ws(byte: u8) -> bool {
     WS.contains(&byte)
 }
 
-const fn is_ident_start(byte: u8) -> bool {
+pub(crate) const fn is_ident_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_'
 }
 

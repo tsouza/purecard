@@ -90,7 +90,7 @@ for i in 0..bytes.len() {
         Step::Next(s)     => state = s,
         Step::Push(f, s)  => { stack.push(f); state = s; }
         Step::Pop(s)      => { stack.pop();  state = s; }
-        Step::Dead        => unreachable!("token pre-validated by L1"),
+        Step::Dead        => return, // L1 pre-validated the token; on the (impossible) Dead, stop safely — no panic in decoder code
     }
     let next = state.lexeme_kind();
     if let Some(k) = prev {
@@ -120,7 +120,7 @@ if let Some(k) = state.lexeme_kind() {
 **Type changes for byte-exactness (mechanical, threaded end-to-end):**
 `Lexeme::Str(Vec<u8>)`, `emitted_strings: Vec<Vec<u8>>`, `emitted_columns() -> &[Vec<u8>]`, `unquote(&[u8]) -> Vec<u8>`. `keeps_operand` reads only the discriminant, so T1 is untouched.
 
-**Soundness invariant (unchanged).** L2 still only narrows: `narrow_into` builds `narrow_buf`, `allowed_mask` does `mask.intersect(&narrow_buf)`, EOS always kept. A boundary the walk mis-segments can only *widen* (pass-through), never mask a gold token. No `step` edit → L1's 5034 byte-replay is byte-identical.
+**Soundness invariant.** The structural guarantee is only `L2 ⊆ L1`: `narrow_into` builds `narrow_buf` and `allowed_mask` does `mask.intersect(&narrow_buf)` (which never *adds* a bit), EOS always kept. This does **not** make a mis-segmentation harmless — a scope walk that records the wrong string/scope builds the wrong narrow set and *can* mask a gold token (that is exactly H1). Soundness therefore rests on the walk segmenting **correctly**, which is verified by the synthetic cross-boundary reproducer and, against the real tokenizer, by the `just qwen-oracle` lane (0 masked over 5034 L1 gold + 269 in-scope L1+L2). No `step` edit → L1's 5034 byte-replay is byte-identical.
 
 **Acceptance:** the merged L1+L2 synthetic lane flips to GREEN; scope unit tests: `b"'MaxRevenue')"` → `emitted_columns() == [b"MaxRevenue"]`; `b".count"` → `on_dot` armed; `b"('"` → `on_open` ran.
 
@@ -138,10 +138,13 @@ fn gpt2_byte_decoder() -> HashMap<char, u8> {
     let mut cs: Vec<u32> = bs.iter().map(|&b| b as u32).collect();
     let mut n = 0u32;
     for b in 0u16..=255 { if !bs.contains(&(b as u8)) { bs.push(b as u8); cs.push(256 + n); n += 1; } }
-    bs.into_iter().zip(cs).map(|(b, c)| (char::from_u32(c).unwrap(), b)).collect()
+    // every c here is a valid scalar by construction; filter_map keeps it total
+    bs.into_iter().zip(cs).filter_map(|(b, c)| char::from_u32(c).map(|ch| (ch, b))).collect()
 }
 fn true_bytes(tok: &str, d: &HashMap<char, u8>) -> Vec<u8> {
-    tok.chars().map(|c| d[&c]).collect()   // undoes Ġ→0x20 too
+    // a special token (<|im_end|>, FIM) is a literal ASCII string; unmapped chars
+    // fall back to a byte the PDA rejects, so the special dead-ends (never admissible).
+    tok.chars().map(|c| *d.get(&c).unwrap_or(&b'?')).collect()   // undoes Ġ→0x20 too
 }
 ```
 
