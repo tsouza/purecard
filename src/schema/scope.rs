@@ -672,7 +672,7 @@ impl ScopeTracker {
 
 #[cfg(test)]
 mod tests {
-    use super::{L2Position, Lexeme, ScopeTracker, classify};
+    use super::{L2Position, Lexeme, ScopeTracker, classify, is_two_byte_op};
     use crate::grammar::pda::{Pda, State};
     use crate::schema::model::{Schema, TypeClass};
 
@@ -730,6 +730,27 @@ mod tests {
         );
         assert_eq!(classify(b"+"), Lexeme::Other);
         assert_eq!(classify(b"-"), Lexeme::Other);
+    }
+
+    #[test]
+    fn two_byte_op_matches_the_operators_and_nothing_else() {
+        // The seven two-byte operators a structural gap munches whole.
+        for op in [b"->", b"==", b"!=", b"<=", b">=", b"&&", b"||"] {
+            assert!(
+                is_two_byte_op(op[0], op[1]),
+                "{op:?} is a two-byte operator"
+            );
+        }
+        // Adjacent non-operator pairs must NOT munch as one token — otherwise a
+        // gap like `.(` or `))` fragments wrongly and its bytes mis-classify.
+        for pair in [
+            b"><", b">>", b"<<", b"--", b"=>", b"=<", b").", b".(", b"))", b"|&", b"&|",
+        ] {
+            assert!(
+                !is_two_byte_op(pair[0], pair[1]),
+                "{pair:?} is not a two-byte operator"
+            );
+        }
     }
 
     #[test]
