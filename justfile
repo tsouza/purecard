@@ -149,6 +149,13 @@ qwen_tokenizer := "target/qwen/tokenizer.json"
 # runs nightly / on-demand via the `qwen-oracle.yml` GitHub Actions workflow.
 qwen-oracle:
     curl -sSL --fail --create-dirs -z {{ qwen_tokenizer }} -o {{ qwen_tokenizer }} "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/resolve/{{ qwen_revision }}/tokenizer.json"
+    just qwen-oracle-run
+
+# The oracle test invocation itself — the single `just` entry point shared by the
+# local `qwen-oracle` recipe above and the nightly `qwen-oracle.yml` workflow, so CI
+# never hand-rolls `cargo` (constitution §2). Assumes the tokenizer already sits at
+# {{ qwen_tokenizer }} (the fetch is the caller's job; CI restores it from cache).
+qwen-oracle-run:
     QWEN_TOKENIZER_JSON={{ qwen_tokenizer }} cargo test --features qwen-oracle --test qwen_soundness -- --nocapture
 
 # ---------------------------------------------------------------------------

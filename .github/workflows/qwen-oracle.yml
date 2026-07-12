@@ -51,5 +51,10 @@ jobs:
       - name: Fetch tokenizer (cache miss only)
         if: steps.tokenizer.outputs.cache-hit != 'true'
         run: curl -sSL --fail --create-dirs -o "$QWEN_TOKENIZER_JSON" "https://huggingface.co/$QWEN_MODEL/resolve/$QWEN_REVISION/tokenizer.json"
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: just
+      # The oracle runs through the single `just` entry point (constitution §2), the
+      # same recipe a local run uses — no hand-rolled `cargo` in CI.
       - name: Real-Qwen L2 soundness oracle
-        run: cargo test --features qwen-oracle --test qwen_soundness -- --nocapture
+        run: just qwen-oracle-run
