@@ -250,3 +250,371 @@ fn l1_l2_lane_streams_every_split_gold_soundly() {
         "every fixture db exercised"
     );
 }
+
+// --- Cross-boundary (lexeme-straddling) merge lane (audit-2 H1/H2) ---------------
+//
+// The clean lane above fragments *within* a lexeme, so no token ever straddles a
+// lexeme boundary. Real Qwen BPE routinely merges across one: a column string's
+// closing quote fused to its delimiter (`'MaxRevenue')`), a navigation dot fused
+// to the next identifier (`.count`), an open paren fused to a string's opening
+// quote (`('`). This pass glues exactly those three seams over the *same* gold
+// corpus, so the identical queries run both clean and straddling.
+
+/// The three cross-boundary BPE merge shapes. Each glues the last chunk of one
+/// lexeme to the first chunk of the next across a lexeme seam.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Merge {
+    /// H1: a `Str`-closing `'` fused to the following `)` or `,` (`')` / `',`).
+    CloseQuoteDelim,
+    /// H2: a `.` fused to the leading chunk of the next identifier (`.co`).
+    DotIdent,
+    /// H2: a `(` fused to a string's opening `'` (`('`).
+    OpenQuote,
+}
+
+/// Every merge shape enabled — the fully-straddling lane.
+const ALL_MERGES: &[Merge] = &[Merge::CloseQuoteDelim, Merge::DotIdent, Merge::OpenQuote];
+
+/// One fragmented chunk tagged with its whole source lexeme, so a merge pass can
+/// recognise the seams between adjacent lexemes.
+struct Tagged {
+    bytes: Vec<u8>,
+    lex: Vec<u8>,
+    first: bool,
+    last: bool,
+}
+
+/// Fragment `query` into chunks, each tagged with its source lexeme and its
+/// position within it — the flat, boundary-aware stream a merge pass folds over.
+fn tagged_chunks(query: &str) -> Vec<Tagged> {
+    let mut out = Vec::new();
+    for lexeme in lex(query) {
+        let chunks = fragment(&lexeme);
+        let n = chunks.len();
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            out.push(Tagged {
+                bytes: chunk,
+                lex: lexeme.clone(),
+                first: i == 0,
+                last: i + 1 == n,
+            });
+        }
+    }
+    out
+}
+
+/// Whether a lexeme's bytes begin an identifier.
+fn is_ident_lex(lex: &[u8]) -> bool {
+    lex.first()
+        .is_some_and(|&b| b.is_ascii_alphabetic() || b == b'_')
+}
+
+/// Whether the seam between `a` (the last chunk of its lexeme) and `b` (the first
+/// chunk of the next) matches an enabled merge shape.
+fn seam_matches(a: &Tagged, b: &Tagged, merges: &[Merge]) -> bool {
+    merges.iter().any(|m| match m {
+        Merge::CloseQuoteDelim => {
+            a.lex.first() == Some(&b'\'') && a.bytes == b"'" && (b.lex == b")" || b.lex == b",")
+        }
+        Merge::DotIdent => a.lex == b"." && is_ident_lex(&b.lex),
+        Merge::OpenQuote => a.lex == b"(" && b.lex.first() == Some(&b'\'') && b.bytes == b"'",
+    })
+}
+
+/// Glue the corpus's fragmented chunks across every enabled seam, yielding a token
+/// stream that straddles lexeme boundaries. `merges` empty reproduces the clean
+/// (never-straddling) stream exactly, so one axis drives both lanes.
+fn merged_tokens(query: &str, merges: &[Merge]) -> Vec<Vec<u8>> {
+    let chunks = tagged_chunks(query);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chunks.len() {
+        if i + 1 < chunks.len()
+            && chunks[i].last
+            && chunks[i + 1].first
+            && seam_matches(&chunks[i], &chunks[i + 1], merges)
+        {
+            let mut glued = chunks[i].bytes.clone();
+            glued.extend_from_slice(&chunks[i + 1].bytes);
+            out.push(glued);
+            i += 2;
+        } else {
+            out.push(chunks[i].bytes.clone());
+            i += 1;
+        }
+    }
+    out
+}
+
+/// A synthetic BPE vocabulary over the merged tokens of `queries`, deduped into
+/// dense ids, EOS one past the last.
+fn build_merged_vocab(queries: &[&str], merges: &[Merge]) -> (Vocab, BTreeMap<Vec<u8>, u32>) {
+    let mut ids: BTreeMap<Vec<u8>, u32> = BTreeMap::new();
+    let mut tokens: Vec<Vec<u8>> = Vec::new();
+    for query in queries {
+        for tok in merged_tokens(query, merges) {
+            if !ids.contains_key(&tok) {
+                ids.insert(tok.clone(), tokens.len() as u32);
+                tokens.push(tok);
+            }
+        }
+    }
+    let eos = tokens.len() as u32;
+    (Vocab::from_byte_tokens(tokens, eos), ids)
+}
+
+/// The merged token-id stream of `query`.
+fn merged_id_stream(query: &str, merges: &[Merge], ids: &BTreeMap<Vec<u8>, u32>) -> Vec<u32> {
+    merged_tokens(query, merges)
+        .iter()
+        .map(|t| {
+            *ids.get(t)
+                .unwrap_or_else(|| panic!("merged token not in vocab: {t:?}"))
+        })
+        .collect()
+}
+
+#[test]
+fn merged_chunks_concatenate_to_the_original_query() {
+    // Bytes must be preserved under merging, or the lane measures the wrong bytes.
+    let sample = "|spider::car_1::model::default::CarsData.all()\
+        ->filter(x|$x.horsepower == '150')";
+    let rebuilt: Vec<u8> = merged_tokens(sample, ALL_MERGES).concat();
+    assert_eq!(rebuilt, sample.as_bytes());
+    // …and the clean projection (no merges) equals the plain fragment stream.
+    let clean: Vec<u8> = merged_tokens(sample, &[]).concat();
+    assert_eq!(clean, sample.as_bytes());
+}
+
+#[test]
+fn merging_actually_straddles_lexeme_boundaries() {
+    // Non-vacuity: the lane only exercises H1/H2 if tokens really straddle. Over
+    // the whole in-scope corpus, each shape must appear at least once.
+    let mut close_quote = 0usize;
+    let mut dot_ident = 0usize;
+    let mut open_quote = 0usize;
+    for (_db, queries) in in_scope_by_db() {
+        for query in &queries {
+            for tok in merged_tokens(query, ALL_MERGES) {
+                let quoted = tok.first() == Some(&b'\'');
+                if quoted && (tok.last() == Some(&b')') || tok.last() == Some(&b',')) {
+                    close_quote += 1;
+                } else if tok.first() == Some(&b'.') && tok.len() > 1 {
+                    dot_ident += 1;
+                } else if tok.first() == Some(&b'(') && tok.last() == Some(&b'\'') {
+                    open_quote += 1;
+                }
+            }
+        }
+    }
+    assert!(close_quote > 0, "H1 close-quote+delim straddle must occur");
+    assert!(dot_ident > 0, "H2 dot+ident straddle must occur");
+    assert!(open_quote > 0, "H2 open-paren+quote straddle must occur");
+}
+
+#[test]
+fn l1_merged_lane_streams_every_straddling_gold_soundly() {
+    // L1 (no schema): byte-liveness keeps a straddling token alive just as it keeps
+    // a fragment alive — this lane is sound today and must stay sound.
+    let mut total = 0usize;
+    let mut failures = Vec::new();
+    for (_db, queries) in in_scope_by_db() {
+        let refs: Vec<&str> = queries.iter().map(String::as_str).collect();
+        let (vocab, ids) = build_merged_vocab(&refs, ALL_MERGES);
+        let eos = vocab.len() as u32;
+        let grammar = CompiledGrammar::compile(vocab);
+        for query in &refs {
+            let mut session = DecoderSession::new(&grammar);
+            if let Err(reason) = replay_tokens(
+                &mut session,
+                &merged_id_stream(query, ALL_MERGES, &ids),
+                eos,
+            ) {
+                failures.push(format!("{reason}\n  {query}"));
+            }
+            total += 1;
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "L1 cross-boundary soundness:\n{}",
+        failures.join("\n")
+    );
+    assert_eq!(total, IN_SCOPE_TOTAL, "in-scope query count");
+}
+
+#[test]
+fn l1_l2_merged_lane_streams_every_straddling_gold_soundly() {
+    // L1+L2 (schema overlay) at cross-boundary granularity: the killer property.
+    // Under the whole-token narrower a merged closing quote (`'col')`) corrupts the
+    // N6 emitted-column set and a later column reference is Diverge-cleared (H1);
+    // the lexeme-boundary scope walk records the true column bytes, so this greens.
+    let mut total = 0usize;
+    let mut failures = Vec::new();
+    let mut seen_dbs = BTreeSet::new();
+    for (db_id, queries) in in_scope_by_db() {
+        seen_dbs.insert(db_id.clone());
+        let schema = load_schema(&db_id);
+        let refs: Vec<&str> = queries.iter().map(String::as_str).collect();
+        let (vocab, ids) = build_merged_vocab(&refs, ALL_MERGES);
+        let eos = vocab.len() as u32;
+        let grammar = CompiledGrammar::compile(vocab);
+        for query in &refs {
+            let mut session = DecoderSession::with_schema(&grammar, schema.clone());
+            if let Err(reason) = replay_tokens(
+                &mut session,
+                &merged_id_stream(query, ALL_MERGES, &ids),
+                eos,
+            ) {
+                failures.push(format!("[{db_id}] {reason}\n  {query}"));
+            }
+            total += 1;
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "L1+L2 cross-boundary soundness ({} of {} queries failed):\n{}",
+        failures.len(),
+        total,
+        failures.join("\n")
+    );
+    assert_eq!(total, IN_SCOPE_TOTAL, "in-scope query count");
+    assert_eq!(
+        seen_dbs.len(),
+        FIXTURE_DBS.len(),
+        "every fixture db exercised"
+    );
+}
+
+/// Update the "inside a string literal" flag across an accepted token's bytes,
+/// honouring `''` doubling — so the coverage probe can attribute a constrained
+/// step to the N6 (column) family or the identifier family.
+fn advance_in_str(mut in_str: bool, bytes: &[u8]) -> bool {
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            if in_str && bytes.get(i + 1) == Some(&b'\'') {
+                i += 2;
+                continue;
+            }
+            in_str = !in_str;
+        }
+        i += 1;
+    }
+    in_str
+}
+
+/// Count the L2-constraining steps (where the schema overlay clears at least one
+/// token L1 admitted) over a gold stream, split into the column (N6) family and
+/// the identifier (N1/N2/N3) family. Both sessions share the grammar and accept
+/// the same gold ids, so their masks are directly comparable.
+fn count_constraining(
+    grammar: &CompiledGrammar,
+    schema: &purecard::Schema,
+    stream: &[u32],
+    bytes_of: impl Fn(u32) -> Vec<u8>,
+) -> (usize, usize) {
+    let mut l1 = DecoderSession::new(grammar);
+    let mut l2 = DecoderSession::with_schema(grammar, schema.clone());
+    let mut in_str = false;
+    let (mut column, mut ident) = (0usize, 0usize);
+    for &id in stream {
+        let tok = bytes_of(id);
+        let constrained = {
+            let l2_mask = l2.allowed_mask().clone();
+            let l1_mask = l1.allowed_mask();
+            l1_mask.iter_ones().any(|bit| !l2_mask.test(bit))
+        };
+        if constrained {
+            if in_str || tok.first() == Some(&b'\'') {
+                column += 1;
+            } else {
+                ident += 1;
+            }
+        }
+        // Accept in both so the two sessions stay in lockstep.
+        l1.accept_token(id).expect("gold admissible under L1");
+        l2.accept_token(id).expect("gold admissible under L1+L2");
+        in_str = advance_in_str(in_str, &tok);
+    }
+    (column, ident)
+}
+
+#[test]
+fn h2_coverage_probe_quantifies_rule_firing_under_straddle() {
+    // Non-failing probe (audit-2 H2): how often L2 actually constrains, clean vs
+    // straddling, split by rule family. Straddle suppresses some firing that no
+    // fix can recover (a merged token legitimately spans two anchors), so this
+    // reports the *real* serving coverage rather than the optimistic synthetic one.
+    let (mut cc_clean, mut ci_clean) = (0usize, 0usize);
+    let (mut cc_merged, mut ci_merged) = (0usize, 0usize);
+    for (db_id, queries) in in_scope_by_db() {
+        let schema = load_schema(&db_id);
+        let refs: Vec<&str> = queries.iter().map(String::as_str).collect();
+
+        let (clean_vocab, clean_ids) = build_merged_vocab(&refs, &[]);
+        let clean_bytes: Vec<Vec<u8>> = {
+            let mut v = vec![Vec::new(); clean_ids.len()];
+            for (tok, &id) in &clean_ids {
+                v[id as usize] = tok.clone();
+            }
+            v
+        };
+        let clean_grammar = CompiledGrammar::compile(clean_vocab);
+        for query in &refs {
+            let (c, i) = count_constraining(
+                &clean_grammar,
+                &schema,
+                &merged_id_stream(query, &[], &clean_ids),
+                |id| clean_bytes[id as usize].clone(),
+            );
+            cc_clean += c;
+            ci_clean += i;
+        }
+
+        let (m_vocab, m_ids) = build_merged_vocab(&refs, ALL_MERGES);
+        let m_bytes: Vec<Vec<u8>> = {
+            let mut v = vec![Vec::new(); m_ids.len()];
+            for (tok, &id) in &m_ids {
+                v[id as usize] = tok.clone();
+            }
+            v
+        };
+        let m_grammar = CompiledGrammar::compile(m_vocab);
+        for query in &refs {
+            let (c, i) = count_constraining(
+                &m_grammar,
+                &schema,
+                &merged_id_stream(query, ALL_MERGES, &m_ids),
+                |id| m_bytes[id as usize].clone(),
+            );
+            cc_merged += c;
+            ci_merged += i;
+        }
+    }
+    // Emit the measured coverage (visible with `--nocapture`).
+    println!(
+        "H2 coverage probe (constraining steps):\n  \
+         clean : column(N6)={cc_clean:>4}  ident(N1/N2/N3)={ci_clean:>4}\n  \
+         merged: column(N6)={cc_merged:>4}  ident(N1/N2/N3)={ci_merged:>4}\n  \
+         retained: column={:.0}%  ident={:.0}%",
+        pct(cc_merged, cc_clean),
+        pct(ci_merged, ci_clean),
+    );
+    // Sanity, not a threshold: clean L2 must fire somewhere (the corpus has N6 and
+    // member/source narrowing), and the fix must retain some firing under straddle.
+    assert!(cc_clean + ci_clean > 0, "clean L2 must constrain somewhere");
+    assert!(
+        cc_merged + ci_merged > 0,
+        "the boundary fix must retain L2 firing under straddle"
+    );
+}
+
+/// Percentage `num/den` (0 when `den` is 0), for the coverage report.
+fn pct(num: usize, den: usize) -> f64 {
+    if den == 0 {
+        0.0
+    } else {
+        100.0 * num as f64 / den as f64
+    }
+}

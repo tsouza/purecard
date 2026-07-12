@@ -210,23 +210,22 @@ impl<'g> DecoderSession<'g> {
         // touches `self.pda`, so no stack contents can be corrupted by a
         // Pop-then-fail. One small stack clone per call, off the per-candidate
         // mask hot path.
-        let pre_state = self.pda.state();
         let mut probe = self.pda.clone();
         for &byte in bytes {
             if probe.advance(byte).is_err() {
                 return Err(DecodeError::InadmissibleToken { id });
             }
         }
+        // Advance the L2 scope machine in lockstep, so the next `allowed_mask`
+        // narrows against the scope this token established. The tracker re-drives
+        // the byte-PDA over the token from its **pre-fold** configuration (state
+        // *and* stack, still live in `self.pda` here), splitting a lexeme-straddling
+        // token at its interior boundaries. Skipped when L1-only.
+        if let Some(schema) = &self.schema {
+            self.tracker.observe(bytes, &self.pda, schema);
+        }
         self.pda = probe;
         self.offset += bytes.len();
-        // Advance the L2 scope machine in lockstep, so the next `allowed_mask`
-        // narrows against the scope this token established. The post-fold state
-        // tells the tracker whether the token stayed inside a lexeme (buffer it) or
-        // left one (flush it). Skipped when L1-only.
-        if let Some(schema) = &self.schema {
-            let post_state = self.pda.state();
-            self.tracker.observe(bytes, pre_state, post_state, schema);
-        }
         Ok(())
     }
 

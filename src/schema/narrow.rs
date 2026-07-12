@@ -40,7 +40,25 @@ const LET_KEYWORD: &str = "let";
 /// growing the key space.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct NarrowCache {
-    masks: HashMap<CacheKey, BitMask>,
+    /// T1's operand lever — a whole-vocab literal-class mask, cursor-independent.
+    operand: HashMap<CacheKey, BitMask>,
+    /// The trie rules (N3, N1/N2, N6). The built trie depends only on the schema
+    /// and rule; only the walk cursor moves with the emitted prefix, so the trie is
+    /// built once per `(schema, rule)` and its per-cursor-node masks are memoized —
+    /// a continuation sub-token re-walks an existing trie instead of rebuilding it,
+    /// and a recurring cursor (the anchor most of all) copies its memoized mask
+    /// instead of re-scanning the whole vocabulary (§4.5, M3-perf).
+    tries: HashMap<CacheKey, RuleCache>,
+}
+
+/// A per-`(schema, rule)` built trie plus the masks memoized per cursor node. The
+/// anchor mask is simply the `root` cursor's entry, so the earlier separate anchor
+/// cache collapses into this one memo.
+#[derive(Debug, Clone)]
+struct RuleCache {
+    trie: Trie,
+    kind: TrieKind,
+    masks: HashMap<u32, BitMask>,
 }
 
 /// The identity of an anchor mask: what determines the schema-legal set when no
@@ -67,7 +85,8 @@ impl NarrowCache {
     /// Drop every memoized mask (on session [`reset`](crate::DecoderSession::reset)):
     /// the emitted-column sets a `Column` key pins are stream-local.
     pub(crate) fn clear(&mut self) {
-        self.masks.clear();
+        self.operand.clear();
+        self.tries.clear();
     }
 }
 
@@ -94,7 +113,7 @@ pub(crate) fn narrow_into(
     schema: &Schema,
     pos: &L2Position,
     prefix: &[u8],
-    columns: &[String],
+    columns: &[Vec<u8>],
     vocab: &Vocab,
     eos_bit: u32,
 ) -> bool {
@@ -145,21 +164,10 @@ pub(crate) fn narrow_into(
     }
 }
 
-/// Which lexeme a trie rule governs — decides whether a vocab token is a
-/// *candidate* the trie may clear, or a structural token it never touches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TrieKind {
-    /// An identifier / classpath (N3, N1/N2): a candidate token starts with an
-    /// identifier-tail byte.
-    Ident,
-    /// A quoted string (N6): a candidate token opens a string (`'`) or continues
-    /// one already in flight.
-    Str,
-}
-
-/// Narrow `dst` by a trie rule: walk `prefix` to the cursor, then keep every
-/// candidate token that can still reach a legal name. Anchor masks (empty prefix)
-/// are cached; mid-identifier cursors walk live.
+/// Narrow `dst` by a trie rule: build (or reuse) the rule's trie, walk `prefix` to
+/// its cursor node, then copy the memoized mask for that cursor or fill and
+/// memoize it. The trie is cursor-independent, so it is built once per key; only
+/// the cursor moves with the emitted prefix.
 #[allow(clippy::too_many_arguments)]
 fn narrow_trie(
     dst: &mut BitMask,
@@ -171,47 +179,73 @@ fn narrow_trie(
     eos_bit: u32,
     build: impl FnOnce() -> Trie,
 ) -> bool {
-    if prefix.is_empty() {
-        with_cache(dst, cache, key, |dst| {
-            let trie = build();
-            fill_trie(dst, vocab, eos_bit, &trie, trie.root(), kind);
-        });
-        return true;
-    }
-    let trie = build();
-    match walk(&trie, trie.root(), prefix) {
-        Walk::Stay(cursor) => {
-            fill_trie(dst, vocab, eos_bit, &trie, cursor, kind);
-            true
+    let entry = cache.tries.entry(key).or_insert_with(|| RuleCache {
+        trie: build(),
+        kind,
+        masks: HashMap::new(),
+    });
+    let cursor = if prefix.is_empty() {
+        entry.trie.root()
+    } else {
+        match walk(&entry.trie, entry.trie.root(), prefix) {
+            Walk::Stay(cursor) => cursor,
+            // The prefix already completed a legal name or diverged — the lexeme is
+            // done (or was never legal); leave the L1 mask unchanged.
+            Walk::Complete | Walk::Diverge => return false,
         }
-        // The prefix already completed a legal name or diverged — the lexeme is
-        // done (or was never legal); leave the L1 mask unchanged.
-        Walk::Complete | Walk::Diverge => false,
+    };
+    if let Some(cached) = entry.masks.get(&cursor) {
+        dst.copy_from(cached);
+    } else {
+        fill_trie(dst, vocab, eos_bit, &entry.trie, cursor, entry.kind);
+        entry.masks.insert(cursor, dst.clone());
     }
+    true
 }
 
-/// Look `key` up in `cache`; on a hit copy the memoized mask into `dst`, on a miss
-/// run `fill` and memoize the result. Only anchor keys (a stable per-`(schema,
-/// rule)` constant) reach here; mid-cursor walks bypass the cache in `narrow_trie`.
+/// Look `key` up in the operand cache; on a hit copy the memoized mask into `dst`,
+/// on a miss run `fill` and memoize it. Only T1's cursor-independent `ReValue`
+/// lever reaches here; the trie rules memoize per cursor node in `narrow_trie`.
 fn with_cache(
     dst: &mut BitMask,
     cache: &mut NarrowCache,
     key: CacheKey,
     fill: impl FnOnce(&mut BitMask),
 ) {
-    if let Some(cached) = cache.masks.get(&key) {
+    if let Some(cached) = cache.operand.get(&key) {
         dst.copy_from(cached);
         return;
     }
     fill(dst);
-    cache.masks.insert(key, dst.clone());
+    cache.operand.insert(key, dst.clone());
 }
 
 /// Double `'` to `''` and wrap in quotes — the raw bytes the model emits for a
-/// column string (§5.5), so the N6 trie is walked byte-exact (no `from_utf8_lossy`
-/// round-trip that a `�` could corrupt).
-fn quote(content: &str) -> String {
-    format!("'{}'", content.replace('\'', "''"))
+/// column string (§5.5), so the N6 trie is walked byte-exact against the tracker's
+/// byte-exact emitted set.
+fn quote(content: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(content.len() + 2);
+    out.push(b'\'');
+    for &b in content {
+        if b == b'\'' {
+            out.push(b'\'');
+        }
+        out.push(b);
+    }
+    out.push(b'\'');
+    out
+}
+
+/// Which lexeme a trie rule governs — decides whether a vocab token is a
+/// *candidate* the trie may clear, or a structural token it never touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrieKind {
+    /// An identifier / classpath (N3, N1/N2): a candidate token starts with an
+    /// identifier-tail byte.
+    Ident,
+    /// A quoted string (N6): a candidate token opens a string (`'`) or continues
+    /// one already in flight.
+    Str,
 }
 
 /// Whether an operand token is kept under a T1 constraint with LHS class `lhs`
@@ -317,7 +351,7 @@ mod tests {
     /// Narrow a fresh buffer for `pos` over `v` at cursor `prefix`, routing the
     /// mask length and EOS bit through the grammar's single source exactly as the
     /// session does. Returns whether a constraint applied and the filled buffer.
-    fn run_prefix(pos: &L2Position, cols: &[String], prefix: &[u8], v: Vocab) -> (bool, BitMask) {
+    fn run_prefix(pos: &L2Position, cols: &[Vec<u8>], prefix: &[u8], v: Vocab) -> (bool, BitMask) {
         let grammar = CompiledGrammar::compile(v);
         let mut mask = BitMask::with_len(grammar.mask_len());
         let mut cache = NarrowCache::new();
@@ -334,7 +368,7 @@ mod tests {
         (applied, mask)
     }
 
-    fn run(pos: &L2Position, cols: &[String], v: Vocab) -> (bool, BitMask) {
+    fn run(pos: &L2Position, cols: &[Vec<u8>], v: Vocab) -> (bool, BitMask) {
         run_prefix(pos, cols, b"", v)
     }
 
@@ -462,7 +496,7 @@ mod tests {
     #[test]
     fn column_keeps_emitted_names_and_masks_the_rest() {
         let v = vocab(&[b"'cnt'", b"'ghost'", b"getInteger"]);
-        let cols = ["cnt".to_owned()];
+        let cols = [b"cnt".to_vec()];
         let (applied, mask) = run(&L2Position::Column, &cols, v);
         assert!(applied);
         assert!(bit(&mask, 0), "an emitted column survives");
@@ -475,7 +509,7 @@ mod tests {
         // A column string `'cnt'` fragments to `'` / `cnt` / `'`. The opening quote
         // survives at the anchor; mid-string, the body is narrowed to the emitted
         // set.
-        let cols = ["cnt".to_owned()];
+        let cols = [b"cnt".to_vec()];
         let (_a, mask) = run(&L2Position::Column, &cols, vocab(&[b"'", b"getInteger"]));
         assert!(bit(&mask, 0), "the opening quote survives");
         assert!(bit(&mask, 1), "a non-string token is untouched");
@@ -531,6 +565,48 @@ mod tests {
             grammar.eos_bit(),
         );
         assert_eq!(first, fresh, "clearing the cache rebuilds the same mask");
+
+        // A **mid-cursor** prefix reuses the same per-`(schema, rule)` trie and
+        // memoizes the cursor node's mask: a second narrow at the same prefix must
+        // equal the first, and equal a fresh-cache narrow — the memo is a pure
+        // function of `(trie, cursor)`, behaviour-preserving, not just the anchor.
+        let member = vocab(&[b"Name", b"Xyz"]);
+        let cont_grammar = CompiledGrammar::compile(member);
+        let mut warm = NarrowCache::new();
+        let mut mid_a = BitMask::with_len(cont_grammar.mask_len());
+        let mut mid_b = BitMask::with_len(cont_grammar.mask_len());
+        for dst in [&mut mid_a, &mut mid_b] {
+            narrow_into(
+                dst,
+                &mut warm,
+                &schema(),
+                &pos,
+                b"country",
+                &[],
+                cont_grammar.vocab(),
+                cont_grammar.eos_bit(),
+            );
+        }
+        assert_eq!(
+            mid_a, mid_b,
+            "the memoized mid-cursor mask is reused verbatim"
+        );
+        let mut cold = NarrowCache::new();
+        let mut mid_fresh = BitMask::with_len(cont_grammar.mask_len());
+        narrow_into(
+            &mut mid_fresh,
+            &mut cold,
+            &schema(),
+            &pos,
+            b"country",
+            &[],
+            cont_grammar.vocab(),
+            cont_grammar.eos_bit(),
+        );
+        assert_eq!(
+            mid_a, mid_fresh,
+            "a cold-cache mid-cursor narrow equals the warm-cache one"
+        );
     }
 
     #[test]
@@ -551,7 +627,7 @@ mod tests {
             &schema(),
             &pos,
             b"",
-            &["cnt".to_owned()],
+            &[b"cnt".to_vec()],
             grammar.vocab(),
             grammar.eos_bit(),
         );
@@ -569,7 +645,7 @@ mod tests {
             &schema(),
             &pos,
             b"",
-            &["ghost".to_owned()],
+            &[b"ghost".to_vec()],
             grammar.vocab(),
             grammar.eos_bit(),
         );

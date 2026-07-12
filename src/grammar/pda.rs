@@ -1053,6 +1053,14 @@ impl Pda {
         self.stack.last().copied()
     }
 
+    /// The whole frame stack, bottom-to-top — the seed the L2 scope tracker's
+    /// lexeme-boundary walk re-drives [`step`] over so an interior closer inside a
+    /// merged token routes through the matching frame (a `)` needs its `Paren`).
+    /// Read-only: the walk clones it into a scratch, never touching the live PDA.
+    pub(crate) fn stack(&self) -> &[Frame] {
+        &self.stack
+    }
+
     /// Whether replaying `bytes` from the live configuration keeps the automaton
     /// alive, reusing `scratch` as the throwaway stack so no per-call heap
     /// allocation is needed. This is the per-step hot path (§4.3): it re-probes a
