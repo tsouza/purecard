@@ -88,11 +88,19 @@ pub(crate) enum Walk { Stay(u32), Complete, Diverge }
 
 pub(crate) fn walk(t: &Trie, mut n: u32, bytes: &[u8]) -> Walk {
     for &b in bytes {
-        if t.nodes[n as usize].terminal {                       // name ended; token overshoots
-            return if !is_ident_tail(b) || b == b'\'' { Walk::Complete } // legal boundary byte
-                   else { Walk::Diverge };                       // ident-tail past name end = phantom
+        // Try to DESCEND first: a byte that continues into a longer legal name
+        // (e.g. `country` is terminal, yet `countryName` descends on `N`) must not
+        // be treated as an overshoot. Only a byte with no child ends the walk.
+        match t.child(n, b) {
+            Some(c) => n = c,
+            None => {
+                return if t.is_terminal(n) && !is_ident_tail(b) {
+                    Walk::Complete // a name ended at a legal boundary byte
+                } else {
+                    Walk::Diverge  // dead end, or an ident-tail byte past a name end
+                };
+            }
         }
-        match t.child(n, b) { Some(c) => n = c, None => return Walk::Diverge }
     }
     Walk::Stay(n)
 }
@@ -105,10 +113,17 @@ pub(crate) fn walk(t: &Trie, mut n: u32, bytes: &[u8]) -> Walk {
 `narrow_into` gains a **cursor node** (from the tracker). `fill` becomes:
 
 ```rust
-fn fill_trie(dst, vocab, eos, trie, cursor) {
+fn fill_trie(dst, vocab, eos, trie, cursor, kind) {
     dst.clear_all();
     for id in 0..vocab.len() as u32 {
-        if !matches!(walk(trie, cursor, vocab.bytes(id).unwrap_or(&[])), Walk::Diverge) {
+        let bytes = vocab.bytes(id).unwrap_or(&[]);
+        // Only identifier/string *candidate* tokens are subject to the rule.
+        // Structural tokens (`.`, `(`, whitespace, keywords) are not candidates —
+        // the rule never constrains them, so they pass through kept; walking them
+        // through the trie would wrongly Diverge-clear them.
+        let keep = !is_candidate(bytes, kind, cursor.mid_lexeme())
+            || !matches!(walk(trie, cursor.node, bytes), Walk::Diverge);
+        if keep {
             dst.set(id);
         }
     }
