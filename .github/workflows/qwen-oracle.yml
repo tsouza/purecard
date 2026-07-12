@@ -1,0 +1,52 @@
+name: Qwen oracle
+
+# The real-Qwen L2 soundness lane (audit-2 C1): replays the whole gold corpus
+# through the ACTUAL Qwen2.5-Coder tokenizer to confirm L2 stays sound against real
+# byte-level-BPE merge boundaries (the H1/H2 class the synthetic reproducer only
+# approximates). Heavy — a ~7 MB tokenizer download plus a ~5 min replay over the
+# 151k-token vocabulary — so it is NOT a per-PR gate: it runs nightly and on demand.
+# The tokenizer is restored from actions/cache on an immutable model revision, so a
+# cache hit is network-free (constitution §2, no bare uncached fetch). The synthetic
+# `bpe_split_soundness` reproducer stays the fast per-PR gate; this is the deep backstop.
+on:
+  schedule:
+    - cron: "23 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: qwen-oracle-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # The Qwen2.5-Coder tokenizer, pinned to an immutable model-repo revision so the
+  # oracle is reproducible and the cache key is stable. Bump deliberately.
+  QWEN_MODEL: Qwen/Qwen2.5-Coder-7B-Instruct
+  QWEN_REVISION: c03e6d358207e414f1eca0bb1891e29f1db0e242
+  QWEN_TOKENIZER_JSON: target/qwen/tokenizer.json
+
+jobs:
+  qwen-oracle:
+    name: qwen-oracle (real tokenizer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Restore the pinned tokenizer (network-free on a hit); the fetch below only
+      # runs on a miss, keyed on the immutable revision.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: tokenizer
+        with:
+          path: target/qwen
+          key: qwen-tokenizer-${{ env.QWEN_REVISION }}
+      - name: Fetch tokenizer (cache miss only)
+        if: steps.tokenizer.outputs.cache-hit != 'true'
+        run: curl -sSL --create-dirs -o "$QWEN_TOKENIZER_JSON" "https://huggingface.co/$QWEN_MODEL/resolve/$QWEN_REVISION/tokenizer.json"
+      - name: Real-Qwen L2 soundness oracle
+        run: cargo test --features qwen-oracle --test qwen_soundness -- --nocapture

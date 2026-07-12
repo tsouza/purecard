@@ -138,8 +138,10 @@ test-legend:
 # class the synthetic `bpe_split_soundness` reproducer approximates. `curl -z` fetches
 # the tokenizer into the gitignored `target/` cache only when it is absent or stale;
 # the lane compiles under the `qwen-oracle` feature (optional `tokenizers` dep).
+# The tokenizer is pinned to an immutable model revision (same as the nightly
+# qwen-oracle.yml workflow) so local and CI runs are reproducible; bump deliberately.
 qwen-oracle:
-    curl -sSL --create-dirs -z target/qwen/tokenizer.json -o target/qwen/tokenizer.json "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/resolve/main/tokenizer.json"
+    curl -sSL --create-dirs -z target/qwen/tokenizer.json -o target/qwen/tokenizer.json "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/resolve/c03e6d358207e414f1eca0bb1891e29f1db0e242/tokenizer.json"
     QWEN_TOKENIZER_JSON=target/qwen/tokenizer.json cargo test --features qwen-oracle --test qwen_soundness -- --nocapture
 
 # ---------------------------------------------------------------------------
