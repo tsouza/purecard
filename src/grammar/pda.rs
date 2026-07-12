@@ -1131,7 +1131,9 @@ impl Pda {
 
 #[cfg(test)]
 mod tests {
-    use super::{Frame, Pda, State, Step, WS, is_date_char, is_ident_start, is_ident_tail, step};
+    use super::{
+        Frame, LexKind, Pda, State, Step, WS, is_date_char, is_ident_start, is_ident_tail, step,
+    };
 
     /// Every distinct automaton state, for the `index`/`COUNT` bijection check.
     /// [`State::index`]'s exhaustive match already makes a new variant a compile
@@ -1191,6 +1193,79 @@ mod tests {
             seen[idx] = true;
         }
         assert!(seen.iter().all(|&hit| hit), "index left a gap in 0..COUNT");
+    }
+
+    #[test]
+    fn lexeme_kind_classifies_each_open_lexeme_and_none_elsewhere() {
+        // Every state that is *inside* a lexeme reports its class, and every
+        // inter-lexeme / structural state reports `None`. Enumerated per state so a
+        // dropped match arm (or a replace-with-`None`) in `lexeme_kind` reddens
+        // here — the L2 scope accumulator keys its buffering on exactly this map.
+        for state in [
+            State::InIdent,
+            State::InSourceIdent,
+            State::InBinder,
+            State::SourceColon,
+            State::SourceColon2,
+        ] {
+            assert_eq!(
+                state.lexeme_kind(),
+                Some(LexKind::Ident),
+                "{} is inside an identifier",
+                state.name()
+            );
+        }
+        for state in [
+            State::SawNumSign,
+            State::InNumberInt,
+            State::NeedFracDigit,
+            State::InNumberFrac,
+        ] {
+            assert_eq!(
+                state.lexeme_kind(),
+                Some(LexKind::Number),
+                "{} is inside a number",
+                state.name()
+            );
+        }
+        for state in [State::SawPercent, State::InDateLit] {
+            assert_eq!(
+                state.lexeme_kind(),
+                Some(LexKind::Date),
+                "{} is inside a date",
+                state.name()
+            );
+        }
+        for state in [
+            State::InStrLit { escaped: false },
+            State::InStrLit { escaped: true },
+        ] {
+            assert_eq!(
+                state.lexeme_kind(),
+                Some(LexKind::Str),
+                "an open string is inside a string"
+            );
+        }
+        // A representative spread of non-lexeme states: the hubs, the operator
+        // "saw first byte" states, and the separators must all be `None`, or the
+        // `_ => None` fallback (and the replace-with-`None` mutant) goes uncaught.
+        for state in [
+            State::Start,
+            State::ExpectValue,
+            State::ExpectValueReq,
+            State::AfterValue,
+            State::AfterDot,
+            State::AfterArrow,
+            State::AfterColon,
+            State::SawDash,
+        ] {
+            assert_eq!(
+                state.lexeme_kind(),
+                None,
+                "{} is not inside any lexeme",
+                state.name()
+            );
+        }
     }
 
     #[test]
