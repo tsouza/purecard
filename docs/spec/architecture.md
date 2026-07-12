@@ -28,6 +28,7 @@ purecard/
     model.rs        Schema { classes -> {prop -> type} }, passed from the host at session init
     scope.rs        lambda scope / type environment tracker (what class is the row var bound to)
     narrow.rs       at identifier/type positions, restrict terminals to the schema-legal set
+    trie.rs         byte-prefix trie: keep a token iff it can extend a legal name (BPE-aware)
   session.rs      DecoderSession: state + stack + scope; accept_token / allowed_mask / is_complete
   selfcheck.rs    tokenizer self-check (M5): vocab round-trip before decode
   error.rs        DecodeError
