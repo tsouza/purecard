@@ -69,6 +69,9 @@ jobs:
       - name: Build wheel
         uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
+          # Pin the maturin the action installs (it defaults to `latest`), so wheel
+          # builds don't drift without a workflow diff (constitution §2).
+          maturin-version: v1.14.1
           command: build
           args: --release --features python --strip
           manylinux: auto
@@ -100,5 +103,7 @@ jobs:
           # CARGO_REGISTRY_TOKEN for crates.io.
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
         with:
+          # Same pin as the build step: don't let the publish path's maturin drift.
+          maturin-version: v1.14.1
           command: upload
           args: --non-interactive --skip-existing wheels/*.whl
