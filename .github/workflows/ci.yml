@@ -188,6 +188,56 @@ jobs:
           name: mutants-out
           path: mutants.out
 
+  # --- PR mutation gate: mutate only the lines this PR changed ---------------
+  mutation-pr:
+    name: mutation (changed lines)
+    needs: changes
+    # The fast per-PR counterpart to the merge-time `mutation` job. That job runs
+    # the full suite and only at merge time, so a change that adds under-tested
+    # logic first reddens the *trunk*, post-merge (exactly how #26's scope mutants
+    # surfaced). This job mutates only the lines the PR touches
+    # (`cargo mutants --in-diff`), so the same 0-missed / 0-timeout standard fails
+    # the PR pre-merge. Bounded to the diff, so it stays quick.
+    if: >-
+      needs.changes.outputs.code == 'true' &&
+      github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    # --in-diff keeps the mutant set small, but bound it like the full job so a
+    # hung mutant fails cleanly instead of riding the runner's edge.
+    timeout-minutes: 20
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      CARGO_MUTANTS_JOBS: "2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          # Full history so the merge-base diff against origin/main resolves.
+          fetch-depth: 0
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install mutation tools
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: cargo-mutants,cargo-nextest,just
+      # Land origin/main as a tracking ref (checkout's narrow refspec omits it) so
+      # the recipe's merge-base diff resolves.
+      - name: Fetch base ref
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+      - name: cargo mutants (changed lines)
+        run: just test-mutation-diff
+      - name: Upload mutants report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: mutants-out-pr
+          path: mutants.out
+
   # --- Supply chain: deny + audit + unused deps ----------------------------
   supply-chain:
     name: deny / audit / unused-deps
@@ -395,7 +445,7 @@ jobs:
   # --- Aggregate gate: the single required check ---------------------------
   ci-gate:
     name: ci-gate
-    needs: [changes, check, coverage, mutation, supply-chain, api-stability, structural, docs, bench, no-warnings]
+    needs: [changes, check, coverage, mutation, mutation-pr, supply-chain, api-stability, structural, docs, bench, no-warnings]
     if: always()
     runs-on: ubuntu-latest
     steps:
