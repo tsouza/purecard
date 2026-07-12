@@ -131,6 +131,17 @@ codspeed:
 test-legend:
     cargo xtask test-legend
 
+# Real-Qwen L2 soundness oracle (on-demand / local, NOT a GitHub CI job — it is
+# heavy: it fetches the real Qwen2.5-Coder tokenizer and replays the whole gold
+# corpus token-by-token through the real byte-level BPE). This is the gold-standard
+# check that L2 stays sound against the *actual* tokenizer merge boundaries — the
+# class the synthetic `bpe_split_soundness` reproducer approximates. `curl -z` fetches
+# the tokenizer into the gitignored `target/` cache only when it is absent or stale;
+# the lane compiles under the `qwen-oracle` feature (optional `tokenizers` dep).
+qwen-oracle:
+    curl -sSL --create-dirs -z target/qwen/tokenizer.json -o target/qwen/tokenizer.json "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/resolve/main/tokenizer.json"
+    QWEN_TOKENIZER_JSON=target/qwen/tokenizer.json cargo test --features qwen-oracle --test qwen_soundness -- --nocapture
+
 # ---------------------------------------------------------------------------
 # Coverage, supply-chain & API-stability gates
 # ---------------------------------------------------------------------------
