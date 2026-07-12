@@ -91,6 +91,16 @@ test-chaos:
 test-mutation:
     cargo mutants --workspace
 
+# Mutation testing restricted to the lines this branch changed vs `base` (default
+# origin/main) — the fast per-PR gate (ci.yml `mutation-pr`). `--in-diff` mutates
+# only changed lines, so a PR that adds under-tested logic fails pre-merge instead
+# of first reddening the trunk on the merge-time full `test-mutation` run. Same
+# copy-mode + CARGO_MUTANTS_JOBS knobs as `test-mutation`; the merge-base diff is
+# the PR's own net changes. `pr.diff` is gitignored and transient.
+test-mutation-diff base="origin/main":
+    git diff --merge-base {{ base }} HEAD > pr.diff
+    cargo mutants --in-diff pr.diff
+
 # ---------------------------------------------------------------------------
 # Fuzzing & benchmarking
 # ---------------------------------------------------------------------------

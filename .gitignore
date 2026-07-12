@@ -54,3 +54,6 @@ __pycache__/
 
 # JS tooling (Bun)
 node_modules/
+
+# Transient merge-base diff written by `just test-mutation-diff` (per-PR mutation gate).
+/pr.diff
