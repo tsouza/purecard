@@ -237,6 +237,9 @@ jobs:
         with:
           name: mutants-out-pr
           path: mutants.out
+          # A no-Rust-in-diff PR produces no mutants.out; that's a clean pass, not
+          # a warning (the default `warn` trips the no-warnings log sweep).
+          if-no-files-found: ignore
 
   # --- Supply chain: deny + audit + unused deps ----------------------------
   supply-chain:
