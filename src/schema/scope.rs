@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use crate::grammar::pda::State;
+use crate::grammar::pda::{LexKind, State};
 use crate::schema::model::{Resolved, Schema, TypeClass};
 
 /// A lexical token, classified from its raw bytes — the granularity the tracker
@@ -137,6 +137,31 @@ const REF_METHODS: &[&str] = &[
     "restrict",
 ];
 
+/// An identifier / string lexeme being accumulated across BPE sub-tokens (§6.4).
+///
+/// Byte-level BPE fragments a schema identifier (`countryName` → `country` +
+/// `Name`); the tracker buffers the fragments and dispatches the scope transition
+/// (resolve / bind / emit) only once the *whole* lexeme completes, so
+/// [`resolve_member`](ScopeTracker::resolve_member) sees the whole name (M3). The
+/// buffered bytes also serve as the trie-walk prefix the narrower reads (B1), so
+/// the constraint persists across the sub-tokens rather than firing only at the
+/// leading one.
+#[derive(Debug, Clone)]
+struct Pending {
+    /// The lexeme class being accumulated.
+    kind: LexKind,
+    /// The bytes emitted since the anchor (the trie-walk prefix, and the whole
+    /// lexeme once it closes).
+    buf: Vec<u8>,
+    /// The PDA state where the lexeme opened — the "pre-state" the buffered token
+    /// is dispatched under, so its scope transition matches the whole-token path.
+    anchor: State,
+    /// The L2 rule constraining this lexeme (or [`None`](L2Position::None) for an
+    /// unnarrowed lexeme such as a keyword or a plain operand), read by
+    /// [`position`](ScopeTracker::position) while the lexeme is in flight.
+    pos: L2Position,
+}
+
 /// The §6.4 scope machine, advanced in lockstep with the byte-PDA.
 ///
 /// It holds the pipeline element class, the lambda variable bindings, the
@@ -147,6 +172,8 @@ const REF_METHODS: &[&str] = &[
 /// than risk masking a real token.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ScopeTracker {
+    /// The identifier / string lexeme accumulating across sub-tokens, if any.
+    pending: Option<Pending>,
     /// The current pipeline element class (the most recent `Class.all()` source).
     cur_class: Option<String>,
     /// Lambda variable → the class it is bound to (`None` = unknown, e.g. a TDS
@@ -196,11 +223,63 @@ impl ScopeTracker {
     }
 
     /// Advance the scope machine by one committed token, given its raw `bytes`,
-    /// the PDA `state` *before* the token was folded, and the `schema`.
+    /// the PDA `pre_state`/`post_state` bracketing the fold, and the `schema`.
     ///
-    /// Called from [`accept_token`](crate::DecoderSession::accept_token) after
-    /// the token commits, so scope moves in lockstep with the automaton.
-    pub(crate) fn observe(&mut self, bytes: &[u8], pre_state: State, schema: &Schema) {
+    /// Called from [`accept_token`](crate::DecoderSession::accept_token) after the
+    /// token commits, so scope moves in lockstep with the automaton. A token that
+    /// stays inside an identifier/string lexeme (`post_state` is still in that
+    /// lexeme) is **buffered**, not dispatched, so a BPE-fragmented name resolves
+    /// and narrows as one whole lexeme (§6.4, M3/B1). The buffered lexeme is
+    /// dispatched — under the same scope logic a whole-token stream uses — the
+    /// moment a token leaves it.
+    pub(crate) fn observe(
+        &mut self,
+        bytes: &[u8],
+        pre_state: State,
+        post_state: State,
+        schema: &Schema,
+    ) {
+        let post_kind = post_state.lexeme_kind();
+        // Continue an open accumulation while the token stays in the same lexeme.
+        if let Some(pending) = self.pending.as_mut()
+            && post_kind == Some(pending.kind)
+        {
+            pending.buf.extend_from_slice(bytes);
+            return;
+        }
+        // The token left any open lexeme: flush the buffered lexeme as one logical
+        // token before processing this one.
+        if let Some(done) = self.pending.take() {
+            self.dispatch_token(&done.buf, done.anchor, schema);
+        }
+        // Open a fresh accumulation for a lexeme this token enters; otherwise it is
+        // a whole structural/operator token, dispatched immediately.
+        match post_kind {
+            Some(kind) => {
+                // The trie rules (source/member/column) persist across sub-tokens;
+                // T1's operand lever (`ReValue`) is a whole-token literal-class
+                // test, so its continuation sub-tokens pass through untouched.
+                let pos = match self.opening_position(pre_state) {
+                    L2Position::ReValue(_) => L2Position::None,
+                    narrowed => narrowed,
+                };
+                self.pending = Some(Pending {
+                    kind,
+                    buf: bytes.to_vec(),
+                    anchor: pre_state,
+                    pos,
+                });
+            }
+            None => self.dispatch_token(bytes, pre_state, schema),
+        }
+    }
+
+    /// Apply one whole lexeme's scope transition, given its raw `bytes` and the
+    /// PDA `pre_state` it opened at. This is the per-token logic a lexeme-granular
+    /// stream drives directly; the BPE path routes buffered lexemes through it too
+    /// (constitution §4, DRY), so a fragmented and a whole identifier drive scope
+    /// identically.
+    fn dispatch_token(&mut self, bytes: &[u8], pre_state: State, schema: &Schema) {
         let lex = classify(bytes);
         if lex == Lexeme::Ws {
             return;
@@ -396,7 +475,27 @@ impl ScopeTracker {
     }
 
     /// The L2 constraint at the current PDA `state`.
+    ///
+    /// At an **anchor** state (an inter-lexeme position) the rule is read from the
+    /// automaton state and the typed scope. At an **in-lexeme** state (mid
+    /// identifier/string, where a BPE sub-token lands) it is the rule the open
+    /// accumulation carries — so the trie narrows the continuation sub-tokens, not
+    /// only the leading one (B1). An in-lexeme state with no open accumulation, or
+    /// an accumulation the anchor did not narrow, is [`None`](L2Position::None).
     pub(crate) fn position(&self, state: State) -> L2Position {
+        if state.lexeme_kind().is_some() {
+            return match &self.pending {
+                Some(pending) => pending.pos.clone(),
+                None => L2Position::None,
+            };
+        }
+        self.opening_position(state)
+    }
+
+    /// The L2 rule at the anchor `state` where a lexeme opens — read from the
+    /// automaton state and the typed scope. Shared by [`position`] (for anchor
+    /// states) and by `observe` (to stamp an opening accumulation's rule).
+    fn opening_position(&self, state: State) -> L2Position {
         match state {
             State::ExpectSource | State::BlockStmt | State::BlockStmtClose => {
                 L2Position::SourceIdent
@@ -415,6 +514,16 @@ impl ScopeTracker {
                 }
             }
             _ => L2Position::None,
+        }
+    }
+
+    /// The identifier/string bytes emitted since the current lexeme's anchor — the
+    /// trie-walk prefix the narrower reads. Empty at an anchor (no open
+    /// accumulation) so the walk starts at the trie root.
+    pub(crate) fn narrow_prefix(&self) -> &[u8] {
+        match &self.pending {
+            Some(pending) => &pending.buf,
+            None => &[],
         }
     }
 
@@ -457,7 +566,8 @@ mod tests {
                 pda.advance(byte)
                     .expect("test tokens are valid emitted Pure");
             }
-            tracker.observe(token, pre, &schema);
+            let post = pda.state();
+            tracker.observe(token, pre, post, &schema);
         }
         (tracker, pda)
     }

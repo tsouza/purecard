@@ -33,11 +33,18 @@ pub fn load_schema(db_id: &str) -> Schema {
 
 /// A per-database vocabulary: distinct token byte-strings mapped to dense ids,
 /// with the reserved EOS bit one past the last id.
+///
+/// Shared scaffolding: the whole-lexeme-proxy L2 targets (`l2_soundness`,
+/// `l2_precision`, `l2_properties`) drive it, while the BPE-split target reuses
+/// only `lex`/`load_schema` from this module — so `dead_code` fires per-target
+/// even though it is live across the suite.
+#[allow(dead_code)]
 pub struct TokenVocab {
     ids: BTreeMap<Vec<u8>, u32>,
     vocab: Vocab,
 }
 
+#[allow(dead_code)]
 impl TokenVocab {
     /// Build a vocabulary from `extra` token byte-strings plus every token of
     /// every query in `queries`. `extra` lets a precision lane inject phantom

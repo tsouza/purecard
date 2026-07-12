@@ -293,6 +293,46 @@ impl State {
     /// (`Vec<_>` keyed by [`index`](State::index)) must have. One more than the
     /// largest [`index`](State::index).
     pub const COUNT: usize = 42;
+
+    /// The lexeme class this state is *inside*, if any (`None` = an inter-lexeme
+    /// or structural position).
+    ///
+    /// A lexeme is **open** while `lexeme_kind` is `Some(k)` and **closes** at the
+    /// byte whose transition takes `Some(k)` to any other verdict. The L2 scope
+    /// tracker uses this to buffer a multi-token identifier / string until it
+    /// completes (so a byte-level-BPE fragmentation resolves and narrows against
+    /// the *whole* lexeme, not a leading sub-token). The `::` classpath-separator
+    /// states stay `Ident` so a source classpath never flushes mid-path.
+    pub(crate) const fn lexeme_kind(self) -> Option<LexKind> {
+        match self {
+            State::InIdent
+            | State::InSourceIdent
+            | State::InBinder
+            | State::SourceColon
+            | State::SourceColon2 => Some(LexKind::Ident),
+            State::SawNumSign | State::InNumberInt | State::NeedFracDigit | State::InNumberFrac => {
+                Some(LexKind::Number)
+            }
+            State::SawPercent | State::InDateLit => Some(LexKind::Date),
+            State::InStrLit { .. } => Some(LexKind::Str),
+            _ => None,
+        }
+    }
+}
+
+/// The four lexeme classes a partial query token can be *inside* (§6.4). The L2
+/// scope tracker buffers a lexeme across token boundaries keyed on this class, so
+/// a BPE-fragmented identifier or string is resolved and narrowed whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LexKind {
+    /// An identifier or `::`-joined classpath.
+    Ident,
+    /// A numeric literal.
+    Number,
+    /// A single-quoted string literal.
+    Str,
+    /// A `%`-prefixed date/time literal.
+    Date,
 }
 
 /// Every [`Frame`] kind — the whole stack alphabet. Used by [`Pda::probe`] to
@@ -383,7 +423,11 @@ const fn is_ident_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || byte == b'_'
 }
 
-const fn is_ident_tail(byte: u8) -> bool {
+/// Whether `byte` may continue an identifier — the byte-PDA's own boundary
+/// predicate. Exposed to the L2 trie walk (`schema::trie`) so an "identifier
+/// still open" verdict shares the automaton's exact notion of an identifier tail,
+/// rather than re-deriving it (constitution §4, DRY).
+pub(crate) const fn is_ident_tail(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
