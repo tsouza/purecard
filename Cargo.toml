@@ -55,7 +55,8 @@ self_cell = { version = "1.2.2", optional = true }
 # compiled only under the `qwen-oracle` feature. `optional = true` so the default
 # build and the published core's dependency surface are unchanged
 # (`check-core-deplight` skips optional entries) — this heavy tokenizer is never in
-# a normal build, CI, or the wheel. Run on-demand locally, not in GitHub CI.
+# a normal build, the per-PR CI, or the wheel. Run on-demand locally (`just
+# qwen-oracle`) or on the nightly `qwen-oracle.yml` workflow, never as a per-PR gate.
 tokenizers = { version = "0.23.1", optional = true }
 
 [dev-dependencies]
@@ -136,6 +137,7 @@ python = ["dep:pyo3", "dep:self_cell", "pyo3/extension-module", "pyo3/abi3-py39"
 
 # The real-Qwen tokenizer soundness oracle (`tests/qwen_soundness.rs`): loads the
 # actual Qwen2.5-Coder tokenizer and replays the gold corpus token-by-token. Heavy
-# and network-fed, so it is a `just qwen-oracle` local/on-demand gate, NOT a GitHub
-# CI job. Off by default; `dep:tokenizers` keeps it out of the normal graph.
+# and network-fed, so it is a `just qwen-oracle` local/on-demand gate and the
+# nightly `qwen-oracle.yml` workflow, NOT a per-PR gate. Off by default;
+# `dep:tokenizers` keeps it out of the normal graph.
 qwen-oracle = ["dep:tokenizers"]

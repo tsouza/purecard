@@ -33,6 +33,9 @@ jobs:
   qwen-oracle:
     name: qwen-oracle (real tokenizer)
     runs-on: ubuntu-latest
+    # Bound the nightly job well under the 360-min runner cap: a stuck fetch or a
+    # hung replay fails visibly instead of burning a full runner slot.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -47,6 +50,6 @@ jobs:
           key: qwen-tokenizer-${{ env.QWEN_REVISION }}
       - name: Fetch tokenizer (cache miss only)
         if: steps.tokenizer.outputs.cache-hit != 'true'
-        run: curl -sSL --create-dirs -o "$QWEN_TOKENIZER_JSON" "https://huggingface.co/$QWEN_MODEL/resolve/$QWEN_REVISION/tokenizer.json"
+        run: curl -sSL --fail --create-dirs -o "$QWEN_TOKENIZER_JSON" "https://huggingface.co/$QWEN_MODEL/resolve/$QWEN_REVISION/tokenizer.json"
       - name: Real-Qwen L2 soundness oracle
         run: cargo test --features qwen-oracle --test qwen_soundness -- --nocapture

@@ -2,8 +2,9 @@
 //!
 //! Runs ONLY under `--features qwen-oracle` (heavy: loads the actual Qwen2.5-Coder
 //! tokenizer and replays the whole gold corpus token-by-token through the real
-//! byte-level BPE). It is a `just qwen-oracle` local/on-demand gate, **not** a
-//! GitHub CI job. This is what the synthetic `bpe_split_soundness` reproducer
+//! byte-level BPE). It is a `just qwen-oracle` local/on-demand gate and the
+//! nightly `qwen-oracle.yml` workflow, **not** a per-PR gate. This is what the
+//! synthetic `bpe_split_soundness` reproducer
 //! approximates: it asserts L2 stays sound against the *actual* tokenizer merge
 //! boundaries (the H1/H2 class), where a token can straddle a lexeme boundary
 //! (`'MaxRevenue')`, `.count`) in ways a lex-then-split proxy never produces.
@@ -11,6 +12,7 @@
 //! Set `QWEN_TOKENIZER_JSON` to the tokenizer.json path (the `just qwen-oracle`
 //! recipe fetches it into `target/qwen/`).
 #![cfg(feature = "qwen-oracle")]
+#![forbid(unsafe_code)]
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -80,7 +82,13 @@ fn gpt2_byte_decoder() -> HashMap<char, u8> {
 /// "bytes" are the literal `<|...|>` — never valid Pure, so the byte-PDA rejects
 /// it and it is inadmissible mid-query (M2), exactly as required.
 fn true_bytes(tok: &str, dec: &HashMap<char, u8>) -> Vec<u8> {
-    tok.chars().map(|c| *dec.get(&c).unwrap_or(&b'?')).collect()
+    tok.chars()
+        .map(|c| {
+            *dec.get(&c).unwrap_or_else(|| {
+                panic!("token char {c:?} is outside the byte-level table; the oracle cannot recover its true bytes")
+            })
+        })
+        .collect()
 }
 
 /// Build a `Vocab` over the real Qwen vocabulary in id order, mapping each id to
@@ -91,13 +99,28 @@ fn build_qwen_vocab(tok: &Tokenizer) -> Vocab {
     let dec = gpt2_byte_decoder();
     let vocab_map = tok.get_vocab(true); // String -> id (incl. added/special)
     let size = vocab_map.len();
-    let mut tokens: Vec<Vec<u8>> = vec![Vec::new(); size];
+    // `get_vocab` returns a HashMap, so id contiguity is not a contract. A holey
+    // id space would leave empty byte slots and silently poison the oracle's
+    // ground truth, so fail fast on any out-of-range, duplicate, or unfilled id.
+    let mut tokens: Vec<Option<Vec<u8>>> = vec![None; size];
     for (s, id) in vocab_map {
         let idx = id as usize;
-        if idx < size {
-            tokens[idx] = true_bytes(&s, &dec);
-        }
+        assert!(
+            idx < size,
+            "Qwen vocab id {idx} >= size {size}: non-dense id space breaks the oracle"
+        );
+        assert!(tokens[idx].is_none(), "duplicate Qwen vocab id {idx}");
+        tokens[idx] = Some(true_bytes(&s, &dec));
     }
+    let tokens: Vec<Vec<u8>> = tokens
+        .into_iter()
+        .enumerate()
+        .map(|(idx, t)| {
+            t.unwrap_or_else(|| {
+                panic!("Qwen vocab id {idx} unfilled: holey id space poisons the oracle")
+            })
+        })
+        .collect();
     let eos = size as u32;
     Vocab::from_byte_tokens(tokens, eos)
 }
