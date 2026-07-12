@@ -37,13 +37,16 @@ jobs:
     # hung replay fails visibly instead of burning a full runner slot.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       # Restore the pinned tokenizer (network-free on a hit); the fetch below only
       # runs on a miss, keyed on the immutable revision.
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - name: Cache Qwen tokenizer
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: tokenizer
         with:
           path: target/qwen
@@ -51,7 +54,8 @@ jobs:
       - name: Fetch tokenizer (cache miss only)
         if: steps.tokenizer.outputs.cache-hit != 'true'
         run: curl -sSL --fail --create-dirs -o "$QWEN_TOKENIZER_JSON" "https://huggingface.co/$QWEN_MODEL/resolve/$QWEN_REVISION/tokenizer.json"
-      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+      - name: Install just
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
           tool: just
       # The oracle runs through the single `just` entry point (constitution §2), the
