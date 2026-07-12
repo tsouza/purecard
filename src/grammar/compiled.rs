@@ -27,8 +27,8 @@ use crate::vocab::Vocab;
 /// A grammar compiled against a specific model vocabulary: the vocab itself plus
 /// the lazy per-[`State`] mask cache (§4).
 ///
-/// M2 wraps the single fixed M1 byte-PDA: the emitted-Pure grammar (§5) is fixed,
-/// so [`from_spec`](CompiledGrammar::from_spec) ignores its `spec` argument and
+/// Wraps the single fixed byte-PDA: the emitted-Pure grammar (§5) is fixed, so
+/// [`from_spec`](CompiledGrammar::from_spec) ignores its `spec` argument and
 /// compiles that one PDA against the vocab. Build one per `(model, grammar)`
 /// pair and share it across sessions.
 #[derive(Debug)]

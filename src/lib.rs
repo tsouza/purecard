@@ -30,7 +30,8 @@
 //! // segment the first query's opening byte fails loud with a locatable drift
 //! // error — asserted, not ignored, so a change to the self-check contract (or a
 //! // silently-passing smoke check) breaks this example.
-//! let toy = Vocab::from_byte_tokens(vec![b"filter".to_vec()], 1);
+//! const TOY_EOS: u32 = 1; // reserved EOS id, one past the toy vocab's lone token
+//! let toy = Vocab::from_byte_tokens(vec![b"filter".to_vec()], TOY_EOS);
 //! let toy_grammar = CompiledGrammar::from_spec("", toy);
 //! assert_eq!(
 //!     self_check_smoke(&toy_grammar),

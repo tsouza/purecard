@@ -35,7 +35,7 @@ purecard/
   ffi.rs          #[cfg(feature="python")] PyO3 bindings (§9)
 ```
 
-There is no `grammar/spec.rs` or `grammar/build.rs` — real EBNF-spec compilation (§5) is deferred, so `CompiledGrammar::from_spec` is a stub over the single fixed M1 PDA (see `src/grammar/mod.rs`). Masking lives in one `mask.rs` (there is no `mask/` directory), and the soundness/differential harness lives under `tests/`, not an in-crate `testing/` module (ADR-0003).
+There is no `grammar/spec.rs` or `grammar/build.rs`: the emitted-Pure grammar (§5) is fixed, so `CompiledGrammar::from_spec` accepts a `spec` argument but compiles that single fixed PDA against the vocab (see `src/grammar/mod.rs`). Masking lives in one `mask.rs` (there is no `mask/` directory), and the soundness/differential harness lives under `tests/`, not an in-crate `testing/` module (ADR-0003).
 
 ### 3.3 Core data flow (per generation)
 
@@ -122,7 +122,7 @@ impl Vocab { pub fn from_byte_tokens(tokens: Vec<Vec<u8>>, eos: u32) -> Self; }
 pub struct CompiledGrammar { /* owns Vocab + lazy per-state mask cache */ }
 impl CompiledGrammar {
     pub fn compile(vocab: Vocab) -> Self;               // bind vocab, size the lazy caches
-    pub fn from_spec(spec: &str, vocab: Vocab) -> Self; // §5 EBNF compiler is deferred: a stub
+    pub fn from_spec(spec: &str, vocab: Vocab) -> Self; // accepts spec; compiles the fixed §5 PDA
                                                         // over the single fixed M1 PDA today
     pub fn vocab(&self) -> &Vocab;
 }

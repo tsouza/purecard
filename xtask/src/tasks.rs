@@ -741,9 +741,10 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 // std::fs + string scanning in the style of the dep-light gate, no shell-out.
 // ---------------------------------------------------------------------------
 
-/// The README, the single source for the corpus/in-scope counts (test consts +
-/// the corpus itself), the architecture doc that carries the module tree, and
-/// this file (whose doc-comments enumerate `CORE_DEP_ALLOWLIST`).
+/// The scanned docs — `README.md` and the `docs/` tree (which carries the
+/// architecture module tree) — checked against their single sources of truth: the
+/// corpus/in-scope counts (test consts + the corpus itself), the `src/` module
+/// layout, and [`CORE_DEP_ALLOWLIST`].
 const DOC_README: &str = "README.md";
 const DOC_DIR: &str = "docs";
 const SOUNDNESS_REPLAY_SRC: &str = "tests/soundness_replay.rs";
