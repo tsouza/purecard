@@ -27,8 +27,9 @@ use crate::vocab::Vocab;
 /// A grammar compiled against a specific model vocabulary: the vocab itself plus
 /// the lazy per-[`State`] mask cache (§4).
 ///
-/// M2 wraps the single fixed M1 byte-PDA; [`from_spec`](CompiledGrammar::from_spec)
-/// is a stub until EBNF compilation (§5) lands. Build one per `(model, grammar)`
+/// Wraps the single fixed byte-PDA: the emitted-Pure grammar (§5) is fixed, so
+/// [`from_spec`](CompiledGrammar::from_spec) ignores its `spec` argument and
+/// compiles that one PDA against the vocab. Build one per `(model, grammar)`
 /// pair and share it across sessions.
 #[derive(Debug)]
 pub struct CompiledGrammar {
@@ -61,10 +62,11 @@ impl CompiledGrammar {
         Self { vocab, cache }
     }
 
-    /// **Stub.** Real EBNF spec compilation (§5) is a later milestone; today this
-    /// ignores `spec` and returns the single fixed M1 PDA-backed grammar compiled
-    /// against `vocab`, so the M2 masking path can be exercised through the
-    /// eventual API shape.
+    /// Compile a grammar for `vocab` from an EBNF `spec`. The emitted-Pure grammar
+    /// (§5) is fixed, so `spec` is ignored and this returns the single fixed M1
+    /// PDA-backed grammar compiled against `vocab` — identical to
+    /// [`compile`](CompiledGrammar::compile), exposing the spec-driven API shape
+    /// the host calls through.
     #[must_use]
     pub fn from_spec(_spec: &str, vocab: Vocab) -> Self {
         Self::compile(vocab)

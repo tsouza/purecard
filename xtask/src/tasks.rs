@@ -3,6 +3,9 @@
 //! Each task shells out to the underlying tool via [`crate::process`] and
 //! propagates exit codes, so `xtask` stays a thin, auditable orchestrator.
 
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 
 use crate::process::{run, run_cargo_steps, run_stdout};
@@ -51,7 +54,11 @@ pub fn ci() -> Result<()> {
         ],
     ])?;
     check_core_deplight()?;
-    run("cargo", &["test", "--workspace", "--all-targets"])
+    check_doc_facts()?;
+    run("cargo", &["test", "--workspace", "--all-targets"])?;
+    // `--all-targets` (and nextest) SKIP doctests, so the crate-root API example
+    // that guards against public-surface drift (L2) needs its own explicit run.
+    run("cargo", &["test", "--workspace", "--doc", "--all-features"])
 }
 
 /// Run the structural / hygiene sweep: ast-grep guardrail rules over the tree.
@@ -726,9 +733,499 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     (if month <= 2 { year + 1 } else { year }, month, day)
 }
 
+// ---------------------------------------------------------------------------
+// Doc-fact assertions (L3): every discrete fact a doc cites is checked against
+// its ONE authoritative source — a test const, the gold corpus, the src/ tree,
+// or `CORE_DEP_ALLOWLIST`. The source is *read*, never re-declared here, so there
+// is exactly one value per fact. Portable/in-process (constitution §2): plain
+// std::fs + string scanning in the style of the dep-light gate, no shell-out.
+// ---------------------------------------------------------------------------
+
+/// The scanned docs — `README.md` and the `docs/` tree (which carries the
+/// architecture module tree) — checked against their single sources of truth: the
+/// corpus/in-scope counts (test consts + the corpus itself), the `src/` module
+/// layout, and [`CORE_DEP_ALLOWLIST`].
+const DOC_README: &str = "README.md";
+const DOC_DIR: &str = "docs";
+const SOUNDNESS_REPLAY_SRC: &str = "tests/soundness_replay.rs";
+const SELFCHECK_CORPUS_SRC: &str = "tests/selfcheck_corpus.rs";
+const L2_SOUNDNESS_SRC: &str = "tests/l2_soundness.rs";
+const L2_PROPERTIES_SRC: &str = "tests/l2_properties.rs";
+const GOLD_CORPUS: &str = "corpus/gold_queries.jsonl";
+const ARCHITECTURE_DOC: &str = "docs/spec/architecture.md";
+/// The heading that precedes the fenced `src/` module tree in the architecture
+/// doc; the gate reads the tree from the first code fence after it.
+const MODULE_TREE_HEADING: &str = "### 3.2 Crate layout";
+/// The crate root file, shown as the tree's root node rather than a leaf module,
+/// so it is excluded from the module-name comparison.
+const CRATE_ROOT_STEM: &str = "lib";
+
+/// Assert every discrete doc fact agrees with its single source (see module note
+/// above). Collects *all* violations before failing, so one run reports the full
+/// drift set rather than the first mismatch.
+///
+/// # Errors
+///
+/// Returns an error if any source cannot be read, the module tree cannot be
+/// located, or any cited fact contradicts its source.
+pub fn check_doc_facts() -> Result<()> {
+    let mut errors: Vec<String> = Vec::new();
+
+    // Fact 1 — gold corpus count. SoT: the test consts AND the corpus record
+    // count, which must agree with each other.
+    let arm_a = read_usize_const(SOUNDNESS_REPLAY_SRC, "ARM_A")?;
+    let arm_c = read_usize_const(SOUNDNESS_REPLAY_SRC, "ARM_C")?;
+    let gold = read_usize_const(SELFCHECK_CORPUS_SRC, "EXPECTED_GOLD_RECORDS")?;
+    if arm_a + arm_c != gold {
+        errors.push(format!(
+            "gold-count consts disagree: {SOUNDNESS_REPLAY_SRC} ARM_A+ARM_C = {} but \
+             {SELFCHECK_CORPUS_SRC} EXPECTED_GOLD_RECORDS = {gold}",
+            arm_a + arm_c
+        ));
+    }
+    let corpus = count_corpus_records(GOLD_CORPUS)?;
+    if corpus != gold {
+        errors.push(format!(
+            "{GOLD_CORPUS} holds {corpus} records but EXPECTED_GOLD_RECORDS = {gold}"
+        ));
+    }
+
+    // Fact 2 — in-scope split. SoT: l2_soundness consts, cross-checked against
+    // the duplicated `IN_SCOPE_TOTAL` in l2_properties.
+    let in_a = read_usize_const(L2_SOUNDNESS_SRC, "IN_SCOPE_ARM_A")?;
+    let in_c = read_usize_const(L2_SOUNDNESS_SRC, "IN_SCOPE_ARM_C")?;
+    let in_total = read_usize_const(L2_SOUNDNESS_SRC, "IN_SCOPE_TOTAL")?;
+    if in_a + in_c != in_total {
+        errors.push(format!(
+            "in-scope consts disagree in {L2_SOUNDNESS_SRC}: {in_a} + {in_c} != {in_total}"
+        ));
+    }
+    let in_total_props = read_usize_const(L2_PROPERTIES_SRC, "IN_SCOPE_TOTAL")?;
+    if in_total_props != in_total {
+        errors.push(format!(
+            "IN_SCOPE_TOTAL drifted: {L2_SOUNDNESS_SRC} = {in_total}, \
+             {L2_PROPERTIES_SRC} = {in_total_props}"
+        ));
+    }
+
+    // Fact 3 — module tree in architecture.md §3.2 vs the real src/ layout. The
+    // highest-value fact: a ghost module (an `engine.rs`/`picard_pure` that never
+    // shipped) or an omitted one fails here.
+    let arch = std::fs::read_to_string(ARCHITECTURE_DOC)
+        .with_context(|| format!("reading {ARCHITECTURE_DOC}"))?;
+    let doc_modules = module_names_in_tree(&arch)
+        .with_context(|| format!("locating the module tree in {ARCHITECTURE_DOC} §3.2"))?;
+    let src_modules = src_module_names()?;
+    let ghosts: Vec<String> = doc_modules.difference(&src_modules).cloned().collect();
+    let missing: Vec<String> = src_modules.difference(&doc_modules).cloned().collect();
+    if !ghosts.is_empty() {
+        errors.push(format!(
+            "{ARCHITECTURE_DOC} §3.2 lists modules absent from src/: {}",
+            ghosts.join(", ")
+        ));
+    }
+    if !missing.is_empty() {
+        errors.push(format!(
+            "{ARCHITECTURE_DOC} §3.2 omits src/ modules: {}",
+            missing.join(", ")
+        ));
+    }
+
+    // Doc set for the text scans below.
+    let docs = collect_docs()?;
+
+    // Fact 4 — core-dep allowlist. SoT: `CORE_DEP_ALLOWLIST`. Any doc enumeration
+    // that claims the *widened* set (a `{ … }` naming both `thiserror` and
+    // `serde`) must equal it exactly; the historical single-crate `{ thiserror }`
+    // is exempt. Scanned over the doc set only — Rust source is dense with braces
+    // (format strings, structs, closures) that no line-scanner can tell from a
+    // crate set, and the enumeration that matters lives in the ADRs.
+    let allow: BTreeSet<String> = CORE_DEP_ALLOWLIST
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    for (path, text) in &docs {
+        for set in allowlist_sets(text) {
+            let got: BTreeSet<String> = set.iter().cloned().collect();
+            if got != allow {
+                errors.push(format!(
+                    "{path} states a core-dep allowlist {{ {} }} that contradicts \
+                     CORE_DEP_ALLOWLIST {{ {} }}",
+                    set.join(", "),
+                    CORE_DEP_ALLOWLIST.join(", ")
+                ));
+            }
+        }
+    }
+
+    // Fact 1b (targeted, unambiguous) — the `gold stays <N>/<N>` soundness ratio
+    // always names the whole corpus, so both sides must equal the gold total.
+    // Bare arm/partition counts are NOT gated: the docs cite the gold split
+    // (4639/395), the in-scope split (256/13), the ~4-query smoke set, and
+    // historical partition sizes (395, 1791) all in the same "<N> query/-query"
+    // form, so a number-adjacency rule can't isolate the gold total without false
+    // positives — that fact is anchored by the const/corpus checks above.
+    for (path, text) in &docs {
+        for n in gold_ratio_citations(text) {
+            if n != gold {
+                errors.push(format!(
+                    "{path} cites a gold ratio {n}/…; the gold total is {gold}"
+                ));
+            }
+        }
+    }
+
+    if !errors.is_empty() {
+        anyhow::bail!(
+            "doc-fact drift — each cited fact must match its single source:\n{}",
+            errors
+                .iter()
+                .map(|e| format!("  - {e}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    Ok(())
+}
+
+/// The value of a `const <name>: usize = <int>;` declaration in `src`.
+fn read_usize_const(src: &str, name: &str) -> Result<usize> {
+    let content = std::fs::read_to_string(src).with_context(|| format!("reading {src}"))?;
+    parse_usize_const(&content, name)
+        .with_context(|| format!("no integer `const {name}: usize` in {src}"))
+}
+
+/// Parse the integer literal of a `const <name>: usize = <int>` line, tolerating
+/// `_` digit separators. Returns `None` if the const is absent or its value is
+/// not an integer literal (e.g. `ARM_A + ARM_C`), which the caller derives.
+fn parse_usize_const(content: &str, name: &str) -> Option<usize> {
+    for line in content.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("const ") else {
+            continue;
+        };
+        let Some(after_name) = rest.trim_start().strip_prefix(name) else {
+            continue;
+        };
+        // The char right after the name must end the identifier (`:` or space),
+        // so `ARM_A` does not match `ARM_ABC`.
+        let after = after_name.trim_start();
+        if !after.starts_with(':') {
+            continue;
+        }
+        let Some(eq) = after.find('=') else { continue };
+        let digits: String = after[eq + 1..]
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '_')
+            .filter(|c| *c != '_')
+            .collect();
+        if let Ok(value) = digits.parse::<usize>() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// Count the records in the gold corpus: non-empty lines. `str::lines` yields the
+/// final record whether or not the file ends in a newline, so the count is exact
+/// without a `wc`-style shell-out (constitution §2, portable).
+fn count_corpus_records(path: &str) -> Result<usize> {
+    let content = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    Ok(content.lines().filter(|l| !l.trim().is_empty()).count())
+}
+
+/// The set of `.rs` module basenames named in the fenced tree under §3.2.
+fn module_names_in_tree(arch_src: &str) -> Result<BTreeSet<String>> {
+    let heading = arch_src
+        .find(MODULE_TREE_HEADING)
+        .context("module-tree heading not found")?;
+    let after_heading = &arch_src[heading..];
+    let fence_open = after_heading
+        .find("```")
+        .context("no code fence after the heading")?;
+    let body = &after_heading[fence_open + 3..];
+    let fence_close = body.find("```").context("unterminated code fence")?;
+    let tree = &body[..fence_close];
+    Ok(tree.lines().flat_map(rs_stems_in_line).collect())
+}
+
+/// The `.rs` file stems named on one tree line (e.g. `compiled.rs …` → `compiled`).
+fn rs_stems_in_line(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+    let mut stems = Vec::new();
+    let mut search_from = 0;
+    while let Some(rel) = line[search_from..].find(".rs") {
+        let dot = search_from + rel;
+        let start = line[..dot]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .map_or(0, |i| i + 1);
+        let stem = &line[start..dot];
+        // The char after `.rs` must not continue an identifier (so `.rsx` is not
+        // an `.rs` file), and the stem must be a real name.
+        let after = bytes.get(dot + 3).copied();
+        let boundary = after.is_none_or(|b| !b.is_ascii_alphanumeric() && b != b'_');
+        if !stem.is_empty() && boundary {
+            stems.push(stem.to_string());
+        }
+        search_from = dot + 3;
+    }
+    stems
+}
+
+/// The `.rs` module basenames under `src/`, excluding the crate root `lib.rs`.
+fn src_module_names() -> Result<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    let mut stack = vec![PathBuf::from("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?
+        {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && stem != CRATE_ROOT_STEM
+            {
+                names.insert(stem.to_string());
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// The README plus every `*.md` under `docs/`, as `(path, contents)` pairs.
+fn collect_docs() -> Result<Vec<(String, String)>> {
+    let mut docs = Vec::new();
+    let readme =
+        std::fs::read_to_string(DOC_README).with_context(|| format!("reading {DOC_README}"))?;
+    docs.push((DOC_README.to_string(), readme));
+
+    let mut stack = vec![PathBuf::from(DOC_DIR)];
+    while let Some(dir) = stack.pop() {
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))?
+        {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "md") {
+                let text = std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading {}", path.display()))?;
+                docs.push((path.to_string_lossy().into_owned(), text));
+            }
+        }
+    }
+    Ok(docs)
+}
+
+/// English stopwords that can appear inside a `{ … }` alongside crate names in
+/// prose; excluded so a prose brace is not mistaken for a crate-set enumeration.
+const BRACE_STOPWORDS: &[&str] = &["and", "the", "for", "not", "but", "with", "plus"];
+
+/// Upper bound on the inside of a `{ … }` treated as a crate-set enumeration; a
+/// genuine allowlist is a handful of names, so anything longer is prose.
+const MAX_ALLOWLIST_BRACE_LEN: usize = 80;
+
+/// The crate-set enumerations in `text`: the lowercase token set inside each
+/// `{ … }` that names `thiserror` together with `serde` (the widened-allowlist
+/// shape). A brace naming only `thiserror` is historical and skipped.
+fn allowlist_sets(text: &str) -> Vec<Vec<String>> {
+    let mut sets = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = text[from..].find('{') {
+        let open = from + rel;
+        // An unmatched `{` (no `}` in the rest of the doc) is a stray prose brace,
+        // not a set: step past just it and keep scanning, so a genuine set later in
+        // the same doc is still evaluated — never abandon the rest of the file.
+        let Some(rel_close) = text[open + 1..].find('}') else {
+            from = open + 1;
+            continue;
+        };
+        let inner = &text[open + 1..open + 1 + rel_close];
+        // A crate set is short; a longer span is prose that merely happens to
+        // pair `{` with a distant `}`. Resume just past this `{` — not past the
+        // far `}` — so a genuine `{ … }` nested inside that prose is still reached
+        // instead of being swallowed with the whole span.
+        if inner.len() >= MAX_ALLOWLIST_BRACE_LEN {
+            from = open + 1;
+            continue;
+        }
+        from = open + 1 + rel_close + 1;
+        if !(inner.contains("thiserror") && inner.contains("serde")) {
+            continue;
+        }
+        let tokens: Vec<String> = inner
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .filter(|t| {
+                t.len() >= 3
+                    && t.chars()
+                        .all(|c| c.is_ascii_lowercase() || c == '_' || c.is_ascii_digit())
+            })
+            .filter(|t| !BRACE_STOPWORDS.contains(t))
+            .map(str::to_string)
+            .collect();
+        if !tokens.is_empty() {
+            sets.push(tokens);
+        }
+    }
+    sets
+}
+
+/// Every `<N>/<N>` ratio appearing on a line that mentions "gold" — the
+/// `gold stays 5034/5034` soundness form, unambiguously the gold total.
+fn gold_ratio_citations(text: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if !line.to_ascii_lowercase().contains("gold") {
+            continue;
+        }
+        let bytes = line.as_bytes();
+        let mut from = 0;
+        while let Some(rel) = line[from..].find('/') {
+            let slash = from + rel;
+            from = slash + 1;
+            let left_start = line[..slash]
+                .rfind(|c: char| !(c.is_ascii_digit() || c == ','))
+                .map_or(0, |i| i + 1);
+            let right_end = slash
+                + 1
+                + line[slash + 1..]
+                    .find(|c: char| !(c.is_ascii_digit() || c == ','))
+                    .unwrap_or(bytes.len() - slash - 1);
+            if let (Some(l), Some(r)) = (
+                parse_grouped(&line[left_start..slash]),
+                parse_grouped(&line[slash + 1..right_end]),
+            ) {
+                out.push(l);
+                out.push(r);
+            }
+        }
+    }
+    out
+}
+
+/// Parse a possibly comma-grouped integer (`5,034` or `5034`), or `None`.
+fn parse_grouped(token: &str) -> Option<usize> {
+    let digits: String = token.chars().filter(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_usize_const_reads_a_literal_and_tolerates_separators() {
+        assert_eq!(
+            parse_usize_const("const ARM_A: usize = 4639;", "ARM_A"),
+            Some(4639)
+        );
+        assert_eq!(
+            parse_usize_const("const N: usize = 1_024;", "N"),
+            Some(1024)
+        );
+    }
+
+    #[test]
+    fn parse_usize_const_ignores_a_prefix_name_and_a_derived_value() {
+        // `ARM_A` must not match `ARM_ABC`, and a derived (non-literal) value has
+        // no integer to read — the caller derives it from its parts instead.
+        assert_eq!(
+            parse_usize_const("const ARM_ABC: usize = 7;", "ARM_A"),
+            None
+        );
+        assert_eq!(
+            parse_usize_const(
+                "const EXPECTED_GOLD_RECORDS: usize = ARM_A + ARM_C;",
+                "EXPECTED_GOLD_RECORDS"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rs_stems_in_line_extracts_module_basenames() {
+        assert_eq!(
+            rs_stems_in_line("    compiled.rs     CompiledGrammar"),
+            ["compiled"]
+        );
+        assert_eq!(
+            rs_stems_in_line("  grammar/        L1 automaton"),
+            Vec::<String>::new()
+        );
+        // A `.rs` that continues into an identifier is not a module file.
+        assert_eq!(rs_stems_in_line("see foo.rsx here"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn module_names_in_tree_reads_only_the_fenced_tree_after_the_heading() {
+        let arch = "\
+intro\n\n### 3.2 Crate layout\n\n```\npurecard/\n  vocab.rs   the vocab\n  session.rs the session\n```\n\nProse mentioning a ghost engine.rs must be ignored.\n";
+        let got = module_names_in_tree(arch).expect("tree parses");
+        let want: BTreeSet<String> = ["vocab".to_string(), "session".to_string()]
+            .into_iter()
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn allowlist_sets_flags_the_widened_form_and_exempts_the_historical_one() {
+        // The historical single-crate brace is exempt (no `serde`).
+        assert!(allowlist_sets("M1 widened it to `{ thiserror }`.").is_empty());
+        // A prose brace with an English stopword and other words is not a set.
+        assert_eq!(
+            allowlist_sets("the widened `{ thiserror, serde, serde_json }` set")[0],
+            ["thiserror", "serde", "serde_json"]
+        );
+        // A long prose span that merely pairs braces is not an enumeration.
+        let long = format!("{{ thiserror {} serde }}", "x".repeat(100));
+        assert!(allowlist_sets(&long).is_empty());
+    }
+
+    #[test]
+    fn allowlist_sets_keeps_scanning_past_a_brace_that_cannot_form_a_set() {
+        // Regression: a stray `{` whose only closing `}` is the genuine set's own
+        // spans an over-long prose window; a *trailing* `{` past the set has no
+        // close at all. The old control flow jumped past the far `}` (swallowing
+        // the nested set) and then `break`ed on the trailing `{` (abandoning the
+        // file) — so a genuine `{ thiserror, serde, tokio }` drift went unchecked.
+        // The scan must step past each such brace and keep going, still surfacing
+        // the later mismatch.
+        let filler = "prose ".repeat(20); // pushes the stray span over the prose bound
+        let text = format!(
+            "a stray {{ {filler}then `{{ thiserror, serde, tokio }}` widens it, trailing {{"
+        );
+        assert_eq!(
+            allowlist_sets(&text),
+            vec![vec![
+                "thiserror".to_string(),
+                "serde".to_string(),
+                "tokio".to_string(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn gold_ratio_citations_reads_only_ratios_on_gold_lines() {
+        assert_eq!(
+            gold_ratio_citations("the is_accepting change keeps gold at 5034/5034."),
+            [5034, 5034]
+        );
+        // A slash between non-numbers, or on a non-gold line, is ignored.
+        assert!(gold_ratio_citations("see src/grammar for the gold path").is_empty());
+        assert!(gold_ratio_citations("the ratio 12/12 on a plain line").is_empty());
+    }
+
+    #[test]
+    fn parse_grouped_strips_separators() {
+        assert_eq!(parse_grouped("5,034"), Some(5034));
+        assert_eq!(parse_grouped("395"), Some(395));
+        assert_eq!(parse_grouped("nope"), None);
+    }
 
     #[test]
     fn civil_from_days_matches_known_anchors() {

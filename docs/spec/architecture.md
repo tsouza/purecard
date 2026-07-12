@@ -28,13 +28,14 @@ purecard/
     model.rs        Schema { classes -> {prop -> type} }, passed from the host at session init
     scope.rs        lambda scope / type environment tracker (what class is the row var bound to)
     narrow.rs       at identifier/type positions, restrict terminals to the schema-legal set
+    trie.rs         byte-prefix trie: keep a token iff it can extend a legal name (BPE-aware)
   session.rs      DecoderSession: state + stack + scope; accept_token / allowed_mask / is_complete
   selfcheck.rs    tokenizer self-check (M5): vocab round-trip before decode
   error.rs        DecodeError
   ffi.rs          #[cfg(feature="python")] PyO3 bindings (§9)
 ```
 
-There is no `grammar/spec.rs` or `grammar/build.rs` — real EBNF-spec compilation (§5) is deferred, so `CompiledGrammar::from_spec` is a stub over the single fixed M1 PDA (see `src/grammar/mod.rs`). Masking lives in one `mask.rs` (there is no `mask/` directory), and the soundness/differential harness lives under `tests/`, not an in-crate `testing/` module (ADR-0003).
+There is no `grammar/spec.rs` or `grammar/build.rs`: the emitted-Pure grammar (§5) is fixed, so `CompiledGrammar::from_spec` accepts a `spec` argument but compiles that single fixed PDA against the vocab (see `src/grammar/mod.rs`). Masking lives in one `mask.rs` (there is no `mask/` directory), and the soundness/differential harness lives under `tests/`, not an in-crate `testing/` module (ADR-0003).
 
 ### 3.3 Core data flow (per generation)
 
@@ -112,14 +113,16 @@ The families and the *relative* cost each establishes (no absolute figures are q
 
 ### 9.1 Rust core
 
-```rust
+This is a signature sketch, not compilable code. The authoritative, compile-and-run-checked usage example is the crate-root doctest in `src/lib.rs` (`cargo test --doc`), which drives this exact surface — so a rename or receiver change fails the build there, keeping this sketch honest.
+
+```text
 pub struct Vocab { /* token id -> raw bytes */ }
 impl Vocab { pub fn from_byte_tokens(tokens: Vec<Vec<u8>>, eos: u32) -> Self; }
 
 pub struct CompiledGrammar { /* owns Vocab + lazy per-state mask cache */ }
 impl CompiledGrammar {
     pub fn compile(vocab: Vocab) -> Self;               // bind vocab, size the lazy caches
-    pub fn from_spec(spec: &str, vocab: Vocab) -> Self; // §5 EBNF compiler is deferred: a stub
+    pub fn from_spec(spec: &str, vocab: Vocab) -> Self; // accepts spec; compiles the fixed §5 PDA
                                                         // over the single fixed M1 PDA today
     pub fn vocab(&self) -> &Vocab;
 }

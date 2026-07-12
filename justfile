@@ -68,6 +68,12 @@ test:
 test-unit:
     cargo nextest run --workspace --lib
 
+# Run the doctests. nextest (and `cargo test --all-targets`) SKIP doctests, so
+# the crate-root API example that guards against public-surface drift (L2) needs
+# its own explicit run — this is the load-bearing gate, not a redundant one.
+doctest:
+    cargo test --workspace --doc --all-features
+
 # Integration tests (testcontainers-backed; may be slower).
 test-integration:
     cargo nextest run --workspace --test '*'
@@ -153,6 +159,12 @@ machete:
 check-core-deplight:
     cargo xtask check-core-deplight
 
+# Assert every discrete doc fact (gold counts, in-scope split, core-dep
+# allowlist, the src/ module tree) matches its single source in code/corpus/FS,
+# so a stale citation fails a PR instead of rotting silently (L3 anti-drift).
+check-doc-facts:
+    cargo xtask check-doc-facts
+
 # Validate release-plz.toml against the workspace, so config drift fails a PR
 # instead of the post-merge trunk run. Delegates to xtask.
 release-plz-check:
@@ -206,6 +218,12 @@ test-python:
 # ---------------------------------------------------------------------------
 # Structural / hygiene checks
 # ---------------------------------------------------------------------------
+
+# Reject time-frozen self-description (scaffold/stub/"later milestone"/…) in
+# shipped src/** doc-comments — a shipped crate must not describe itself as
+# unbuilt work (constitution §5). Pure Bun regex over doc-comment lines only.
+lint-stale:
+    bun scripts/checks/stale-selfdescription.mjs --all
 
 # ast-grep structural rules (banned constructs, architecture guardrails).
 sweep:

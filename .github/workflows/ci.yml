@@ -58,6 +58,11 @@ jobs:
               - 'sgconfig.yml'
               - 'scripts/**'
               - 'release-plz.toml'
+              # The doc-fact gate (cargo xtask check-doc-facts) reads these, so a
+              # doc/corpus edit that drifts from its source must trigger the lane.
+              - 'README.md'
+              - 'docs/**'
+              - 'corpus/gold_queries.jsonl'
               - '.github/workflows/ci.yml'
 
   # --- Primary gate: fmt + lint + build + all nextest layers via xtask -----
@@ -227,10 +232,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
+    # The doc-fact gate compiles `xtask`, so share the same sccache setup the
+    # other cargo-building jobs use (constitution §2 — reuse the cache).
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Install ast-grep
@@ -241,6 +253,10 @@ jobs:
         run: ast-grep scan
       - name: Postponed-marker gate
         run: bun scripts/checks/postponed-markers.mjs --all
+      - name: Stale self-description gate
+        run: bun scripts/checks/stale-selfdescription.mjs --all
+      - name: Doc-fact assertions
+        run: cargo xtask check-doc-facts
 
   # --- Docs build (missing-docs is a hard error) ---------------------------
   docs:

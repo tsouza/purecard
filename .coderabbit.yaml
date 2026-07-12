@@ -34,6 +34,15 @@ reviews:
         - Comment economy: comments explain WHY for genuinely exotic logic only.
           Flag narrating comments, commented-out code, or a comment that only
           exists because the code is unclear (fix the code instead).
+        - Doc-comment staleness (read the WHOLE touched file, not just the diff):
+          when a change touches a `.rs` file, re-read that file's entire `//!`
+          module header and the `///` docs of the items it changes. A shipped
+          doc-comment must describe present behaviour, never frozen milestone
+          status ("stub", "scaffold", "not yet built", "later milestone", "L2
+          still absent"). The L1 `stale-selfdescription` lint catches anchored
+          phrases; your job is the paraphrases it cannot — prose that narrates
+          absent or superseded work without a banned token. Constitution §5;
+          docs/lessons.md (doc-drift audit).
         - Decoder purity (constitution §1): the decoder core has no I/O, async,
           network, or framework deps and never calls the Legend engine (the host
           supplies Vocab/Schema). The feature-gated PyO3 `ffi` module is the only
