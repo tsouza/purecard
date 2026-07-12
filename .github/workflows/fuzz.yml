@@ -78,7 +78,7 @@ jobs:
       # First-party installer; it caches the binary on the pinned version key, so
       # cargo-fuzz is never re-downloaded uncached (constitution §2). Pinned to a
       # verified-latest version rather than floating.
-      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
         with:
           tool: cargo-fuzz@0.13.2
       # Restore the per-target corpus from the most recent prior run (prefix
