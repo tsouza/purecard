@@ -80,9 +80,10 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: fuzz
-      # First-party installer; it caches the binary on the pinned version key, so
-      # cargo-fuzz is never re-downloaded uncached (constitution §2). Pinned to a
-      # verified-latest version rather than floating.
+      # First-party installer of a pinned, prebuilt cargo-fuzz from GitHub Releases
+      # — constitution §2's preferred path over a bare curl. install-action fetches
+      # the binary each run (it keeps no cross-run cache of its own), but a pinned,
+      # prebuilt download is fast and reproducible, not a compile or a floating curl.
       - name: Install cargo-fuzz
         uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
         with:
