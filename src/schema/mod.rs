@@ -31,5 +31,6 @@
 pub(crate) mod model;
 pub(crate) mod narrow;
 pub(crate) mod scope;
+pub(crate) mod trie;
 
 pub use model::{Schema, SchemaError};

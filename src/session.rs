@@ -24,7 +24,7 @@ use crate::grammar::pda::{Frame, Pda};
 use crate::mask::BitMask;
 use crate::recognizer::ByteRecognizer;
 use crate::schema::Schema;
-use crate::schema::narrow::narrow_into;
+use crate::schema::narrow::{NarrowCache, narrow_into};
 use crate::schema::scope::ScopeTracker;
 
 /// A byte-at-a-time decode session over the emitted-Pure grammar, bound to a
@@ -62,6 +62,10 @@ pub struct DecoderSession<'g> {
     /// [`accept_token`](DecoderSession::accept_token). Inert (never consulted)
     /// when `schema` is `None`.
     tracker: ScopeTracker,
+    /// The L2 per-`(schema, rule)` mask memo (§4.5): the anchor scan for a source
+    /// or member set is a constant, computed once and copied thereafter. Empty and
+    /// untouched on the L1-only (`schema` is `None`) path.
+    narrow_cache: NarrowCache,
 }
 
 impl<'g> DecoderSession<'g> {
@@ -79,6 +83,7 @@ impl<'g> DecoderSession<'g> {
             narrow_buf: BitMask::with_len(grammar.mask_len()),
             schema: None,
             tracker: ScopeTracker::new(),
+            narrow_cache: NarrowCache::new(),
         }
     }
 
@@ -99,6 +104,7 @@ impl<'g> DecoderSession<'g> {
             narrow_buf: BitMask::with_len(grammar.mask_len()),
             schema: Some(schema),
             tracker: ScopeTracker::new(),
+            narrow_cache: NarrowCache::new(),
         }
     }
 
@@ -153,8 +159,10 @@ impl<'g> DecoderSession<'g> {
             let pos = self.tracker.position(self.pda.state());
             if narrow_into(
                 &mut self.narrow_buf,
+                &mut self.narrow_cache,
                 schema,
                 &pos,
+                self.tracker.narrow_prefix(),
                 self.tracker.emitted_columns(),
                 self.grammar.vocab(),
                 self.grammar.eos_bit(),
@@ -212,9 +220,12 @@ impl<'g> DecoderSession<'g> {
         self.pda = probe;
         self.offset += bytes.len();
         // Advance the L2 scope machine in lockstep, so the next `allowed_mask`
-        // narrows against the scope this token established. Skipped when L1-only.
+        // narrows against the scope this token established. The post-fold state
+        // tells the tracker whether the token stayed inside a lexeme (buffer it) or
+        // left one (flush it). Skipped when L1-only.
         if let Some(schema) = &self.schema {
-            self.tracker.observe(bytes, pre_state, schema);
+            let post_state = self.pda.state();
+            self.tracker.observe(bytes, pre_state, post_state, schema);
         }
         Ok(())
     }
@@ -245,6 +256,10 @@ impl<'g> DecoderSession<'g> {
         self.pda.reset();
         self.offset = 0;
         self.tracker = ScopeTracker::new();
+        // The N6 column memo is keyed on the emitted-column count, which resets
+        // with the stream — a stale entry could otherwise be re-hit at a repeated
+        // count over a different column set.
+        self.narrow_cache.clear();
     }
 }
 
@@ -272,6 +287,7 @@ impl ByteRecognizer for DecoderSession<'_> {
         self.pda.reset();
         self.offset = 0;
         self.tracker = ScopeTracker::new();
+        self.narrow_cache.clear();
     }
 }
 

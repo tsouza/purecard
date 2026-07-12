@@ -38,7 +38,7 @@ pub(crate) enum PrimName {
 
 /// The comparison/operand type-classes primitives collapse into (§6.2.2). L2's
 /// type rules (T1) narrow against these, not the raw primitive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TypeClass {
     /// `Integer`/`Float`/`Decimal`/`Number` — number literals.
     Numeric,
@@ -295,11 +295,15 @@ impl Schema {
         self.classes.contains_key(path)
     }
 
-    /// Whether `path` is a legal pipeline **source**: a real class (arm-C
-    /// `Class.all()`) or the store/`Db` path (arm-A `Db->tableReference`). N3
-    /// narrows the source to exactly this set; a phantom class is neither.
-    pub(crate) fn is_source(&self, path: &str) -> bool {
-        self.has_class(path) || path == self.db_path
+    /// Every legal pipeline **source** byte-string (§6.5 N3): each class path plus
+    /// the store/`Db` path. The prefix-aware N3 narrower builds its completion
+    /// trie from exactly this set (the `let` binder keyword is added by the
+    /// narrower, being grammar rather than a schema source).
+    pub(crate) fn source_paths(&self) -> impl Iterator<Item = &str> {
+        self.classes
+            .keys()
+            .map(String::as_str)
+            .chain(std::iter::once(self.db_path.as_str()))
     }
 
     /// The full member-name set of a class (§6.5 N1): its stored properties,
@@ -445,15 +449,17 @@ mod tests {
     }
 
     #[test]
-    fn has_class_and_is_source_separate_classes_the_store_and_phantoms() {
+    fn source_paths_are_the_classes_and_the_store_not_phantoms() {
         let s = sample();
         assert!(s.has_class("A") && s.has_class("Base"));
         assert!(!s.has_class("Nope"));
-        // A source is a class OR the store path — but never a phantom.
-        assert!(s.is_source("A"));
-        assert!(s.is_source("spider::d::Db"));
-        assert!(!s.is_source("Nope"));
-        assert!(!s.is_source("spider::d::Other"));
+        // A source is a class OR the store path — but never a phantom. The N3
+        // trie is built from exactly `source_paths()`.
+        let sources: Vec<&str> = s.source_paths().collect();
+        assert!(sources.contains(&"A"));
+        assert!(sources.contains(&"spider::d::Db"));
+        assert!(!sources.contains(&"Nope"));
+        assert!(!sources.contains(&"spider::d::Other"));
     }
 
     #[test]

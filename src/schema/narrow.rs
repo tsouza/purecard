@@ -8,14 +8,23 @@
 //! Intersecting such a mask can only remove admissible tokens — the structural
 //! `L2 ⊆ L1` guarantee (§6, G4) is a property of the operation, not merely a test.
 //!
+//! The identifier/string rules (N3, N1/N2, N6) narrow over **reachable byte
+//! prefixes**, not whole classified lexemes: a token is kept while it can still
+//! *extend some* legal name from the bytes emitted since the anchor (a
+//! [`Trie`] walk). This is what makes the overlay sound under byte-level BPE,
+//! where a schema identifier arrives in fragments (adversarial-review B1). The
+//! type rule (T1) narrows by literal class, which BPE does not fragment.
+//!
 //! Only the shipped rules build a constraining mask (N3, N1/N2, N6, T1). Every
 //! other position returns [`None`] — the mask passes through unchanged.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
+use crate::grammar::pda::is_ident_tail;
 use crate::mask::BitMask;
 use crate::schema::model::{Schema, TypeClass};
 use crate::schema::scope::{L2Position, Lexeme, classify};
+use crate::schema::trie::{Trie, Walk, walk};
 use crate::vocab::Vocab;
 
 /// The `let` binder keyword, legal at a block-statement source position alongside
@@ -23,23 +32,68 @@ use crate::vocab::Vocab;
 /// mistaken for a phantom class.
 const LET_KEYWORD: &str = "let";
 
+/// The memoized schema-legal masks (`docs/spec/schema.md` §4.5). Building a
+/// rule's mask scans the whole vocabulary; at the **anchor** (no bytes emitted
+/// yet, the common case) that scan is a per-`(schema, rule)` constant, so it is
+/// computed once and copied thereafter. Mid-identifier cursors (bytes already
+/// emitted) are rarer and short, so they fall back to a live walk rather than
+/// growing the key space.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct NarrowCache {
+    masks: HashMap<CacheKey, BitMask>,
+}
+
+/// The identity of an anchor mask: what determines the schema-legal set when no
+/// bytes have been emitted yet.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum CacheKey {
+    /// N3 source set — a schema constant.
+    Source,
+    /// N1/N2 member set of a class — one per class.
+    Member(String),
+    /// T1 operand class — the literal-class lever (cursor-independent).
+    ReValue(TypeClass),
+    /// N6 column set at a given emitted-column count (monotonic within a stream,
+    /// so the count pins the set exactly).
+    Column(usize),
+}
+
+impl NarrowCache {
+    /// A fresh, empty cache.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drop every memoized mask (on session [`reset`](crate::DecoderSession::reset)):
+    /// the emitted-column sets a `Column` key pins are stream-local.
+    pub(crate) fn clear(&mut self) {
+        self.masks.clear();
+    }
+}
+
 /// Refill the caller's reused `dst` buffer with the schema-legal set for `pos`,
 /// returning `true` when a constraint applied (the caller intersects `dst` into
 /// the L1 mask) or `false` when the position carries no L2 constraint (the L1
 /// mask passes through untouched).
 ///
-/// `dst` is the session's own buffer, sized to the grammar's
-/// [`mask_len`](crate::grammar::compiled::CompiledGrammar::mask_len) — so
-/// narrowing allocates no per-step mask (§4.3). Both the mask length and
-/// `eos_bit` flow in from `compiled.rs`, the single source of the `V + 1` / EOS
-/// convention, rather than being re-derived from `vocab.len()` here (DRY: the
-/// session buffer and this legal set can never disagree on length). `columns` is
-/// the N6 legal column set (the tracker's emitted-string superset); it is ignored
-/// for other rules.
+/// `prefix` is the identifier/string bytes emitted since the anchor (empty at the
+/// anchor itself); the trie rules walk it to a cursor node and narrow the
+/// continuation from there, so narrowing persists across BPE sub-tokens. `dst` is
+/// the session's own buffer, sized to
+/// [`mask_len`](crate::grammar::compiled::CompiledGrammar::mask_len), so narrowing
+/// allocates no per-step mask (§4.3). `columns` is the N6 legal column set (the
+/// tracker's emitted-string superset); it is ignored for other rules.
+// Each argument is a distinct, documented input to the per-step narrower (output
+// buffer, memo, schema, position, emitted-prefix, column set, vocab, EOS bit);
+// bundling them into a context struct would add indirection to the hot path for
+// no clarity gain, so the count is accepted here rather than silenced globally.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn narrow_into(
     dst: &mut BitMask,
+    cache: &mut NarrowCache,
     schema: &Schema,
     pos: &L2Position,
+    prefix: &[u8],
     columns: &[String],
     vocab: &Vocab,
     eos_bit: u32,
@@ -51,38 +105,113 @@ pub(crate) fn narrow_into(
             // the string/numeric levers) — keep the L1 mask unchanged.
             false
         }
-        L2Position::SourceIdent => {
-            fill(dst, vocab, eos_bit, |lex| match lex {
-                // A source position also legally holds the `let` binder keyword (a
-                // block-statement start) — it is grammar, not a phantom class.
-                Lexeme::Ident(text) => schema.is_source(text) || text == LET_KEYWORD,
-                _ => true,
-            });
-            true
-        }
-        L2Position::Member(class) => {
-            let member_names = schema.member_names(class);
-            let members: HashSet<&str> = member_names.iter().map(String::as_str).collect();
-            fill(dst, vocab, eos_bit, |lex| match lex {
-                Lexeme::Ident(text) => members.contains(text.as_str()),
-                _ => true,
-            });
-            true
-        }
         L2Position::ReValue(tc) => {
             let masked_by = *tc;
-            fill(dst, vocab, eos_bit, |lex| keeps_operand(lex, masked_by));
-            true
-        }
-        L2Position::Column => {
-            let cols: HashSet<&str> = columns.iter().map(String::as_str).collect();
-            fill(dst, vocab, eos_bit, |lex| match lex {
-                Lexeme::Str(content) => cols.contains(content.as_str()),
-                _ => true,
+            with_cache(dst, cache, CacheKey::ReValue(masked_by), |dst| {
+                fill_operand(dst, vocab, eos_bit, masked_by);
             });
             true
         }
+        L2Position::SourceIdent => narrow_trie(
+            dst,
+            cache,
+            CacheKey::Source,
+            prefix,
+            TrieKind::Ident,
+            vocab,
+            eos_bit,
+            || Trie::from_names(schema.source_paths().chain(std::iter::once(LET_KEYWORD))),
+        ),
+        L2Position::Member(class) => narrow_trie(
+            dst,
+            cache,
+            CacheKey::Member(class.clone()),
+            prefix,
+            TrieKind::Ident,
+            vocab,
+            eos_bit,
+            || Trie::from_names(schema.member_names(class)),
+        ),
+        L2Position::Column => narrow_trie(
+            dst,
+            cache,
+            CacheKey::Column(columns.len()),
+            prefix,
+            TrieKind::Str,
+            vocab,
+            eos_bit,
+            || Trie::from_names(columns.iter().map(|c| quote(c))),
+        ),
     }
+}
+
+/// Which lexeme a trie rule governs — decides whether a vocab token is a
+/// *candidate* the trie may clear, or a structural token it never touches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrieKind {
+    /// An identifier / classpath (N3, N1/N2): a candidate token starts with an
+    /// identifier-tail byte.
+    Ident,
+    /// A quoted string (N6): a candidate token opens a string (`'`) or continues
+    /// one already in flight.
+    Str,
+}
+
+/// Narrow `dst` by a trie rule: walk `prefix` to the cursor, then keep every
+/// candidate token that can still reach a legal name. Anchor masks (empty prefix)
+/// are cached; mid-identifier cursors walk live.
+#[allow(clippy::too_many_arguments)]
+fn narrow_trie(
+    dst: &mut BitMask,
+    cache: &mut NarrowCache,
+    key: CacheKey,
+    prefix: &[u8],
+    kind: TrieKind,
+    vocab: &Vocab,
+    eos_bit: u32,
+    build: impl FnOnce() -> Trie,
+) -> bool {
+    if prefix.is_empty() {
+        with_cache(dst, cache, key, |dst| {
+            let trie = build();
+            fill_trie(dst, vocab, eos_bit, &trie, trie.root(), kind);
+        });
+        return true;
+    }
+    let trie = build();
+    match walk(&trie, trie.root(), prefix) {
+        Walk::Stay(cursor) => {
+            fill_trie(dst, vocab, eos_bit, &trie, cursor, kind);
+            true
+        }
+        // The prefix already completed a legal name or diverged — the lexeme is
+        // done (or was never legal); leave the L1 mask unchanged.
+        Walk::Complete | Walk::Diverge => false,
+    }
+}
+
+/// Look `key` up in `cache`; on a hit copy the memoized mask into `dst`, on a miss
+/// run `fill` and memoize the result. Only anchor keys (a stable per-`(schema,
+/// rule)` constant) reach here; mid-cursor walks bypass the cache in `narrow_trie`.
+fn with_cache(
+    dst: &mut BitMask,
+    cache: &mut NarrowCache,
+    key: CacheKey,
+    fill: impl FnOnce(&mut BitMask),
+) {
+    if let Some(cached) = cache.masks.get(&key) {
+        dst.copy_from(cached);
+        return;
+    }
+    fill(dst);
+    cache.masks.insert(key, dst.clone());
+}
+
+/// Double `'` to `''` and wrap in quotes — the raw bytes the model emits for a
+/// column string (§5.5), so the N6 trie is walked byte-exact (no `from_utf8_lossy`
+/// round-trip that a `�` could corrupt).
+fn quote(content: &str) -> String {
+    format!("'{}'", content.replace('\'', "''"))
 }
 
 /// Whether an operand token is kept under a T1 constraint with LHS class `lhs`
@@ -98,24 +227,65 @@ fn keeps_operand(lex: &Lexeme, lhs: TypeClass) -> bool {
     }
 }
 
-/// Refill `dst` in place — no allocation — keeping every `vocab` token for which
-/// `keep` holds (given its classified [`Lexeme`]), plus the reserved `eos_bit`.
-fn fill(dst: &mut BitMask, vocab: &Vocab, eos_bit: u32, keep: impl Fn(&Lexeme) -> bool) {
+/// Refill `dst` with the T1 operand set for LHS class `masked_by`, plus EOS.
+fn fill_operand(dst: &mut BitMask, vocab: &Vocab, eos_bit: u32, masked_by: TypeClass) {
     dst.clear_all();
     for id in 0..vocab.len() as u32 {
         let bytes = vocab.bytes(id).unwrap_or(&[]);
-        if keep(&classify(bytes)) {
+        if keeps_operand(&classify(bytes), masked_by) {
             dst.set(id);
         }
     }
-    // The EOS bit is always kept: L2 must never make a complete query
-    // uncompletable (§4.3). The L1 mask decides whether it is actually set.
     dst.set(eos_bit);
+}
+
+/// Refill `dst` from a trie walk: keep the reserved EOS bit and every vocab token
+/// that is either a *non-candidate* (a structural/whitespace token the rule does
+/// not govern) or a candidate that can still reach a legal name from `cursor`.
+fn fill_trie(
+    dst: &mut BitMask,
+    vocab: &Vocab,
+    eos_bit: u32,
+    trie: &Trie,
+    cursor: u32,
+    kind: TrieKind,
+) {
+    dst.clear_all();
+    let mid = cursor != trie.root();
+    for id in 0..vocab.len() as u32 {
+        let bytes = vocab.bytes(id).unwrap_or(&[]);
+        let keep = if is_candidate(bytes, kind, mid) {
+            !matches!(walk(trie, cursor, bytes), Walk::Diverge)
+        } else {
+            // A structural token (whitespace, operator, delimiter) is not the
+            // identifier/string the trie governs — it is kept exactly as the
+            // whole-lexeme narrower kept every non-`Ident`/`Str` lexeme, so L2
+            // never masks a token L1 would allow through a boundary.
+            true
+        };
+        if keep {
+            dst.set(id);
+        }
+    }
+    dst.set(eos_bit);
+}
+
+/// Whether `bytes` is a token the `kind` trie may clear: an identifier-tail start
+/// for an `Ident` rule, or a string opener (or any byte once a string is in
+/// flight) for a `Str` rule.
+fn is_candidate(bytes: &[u8], kind: TrieKind, mid_lexeme: bool) -> bool {
+    match bytes.first() {
+        None => false,
+        Some(&first) => match kind {
+            TrieKind::Ident => is_ident_tail(first),
+            TrieKind::Str => first == b'\'' || mid_lexeme,
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::narrow_into;
+    use super::{NarrowCache, narrow_into};
     use crate::grammar::compiled::CompiledGrammar;
     use crate::mask::BitMask;
     use crate::schema::model::{Schema, TypeClass};
@@ -125,7 +295,8 @@ mod tests {
     const SAMPLE: &str = r#"{
       "db_id": "d", "db_path": "spider::d::Db",
       "classes": { "A": { "simple_name": "A",
-        "properties": [{"name": "n", "type": {"kind": "primitive", "name": "Integer"}, "mult": {"lower": 1, "upper": 1}}] } },
+        "properties": [{"name": "countryName", "type": {"kind": "primitive", "name": "Integer"}, "mult": {"lower": 1, "upper": 1}},
+                       {"name": "country", "type": {"kind": "primitive", "name": "Integer"}, "mult": {"lower": 1, "upper": 1}}] } },
       "associations": [], "enums": {}
     }"#;
 
@@ -143,21 +314,28 @@ mod tests {
         mask.test(id)
     }
 
-    /// Narrow a fresh buffer for `pos` over `v`, routing the mask length and EOS
-    /// bit through the grammar's single source (`compiled.rs`) exactly as the
+    /// Narrow a fresh buffer for `pos` over `v` at cursor `prefix`, routing the
+    /// mask length and EOS bit through the grammar's single source exactly as the
     /// session does. Returns whether a constraint applied and the filled buffer.
-    fn run(pos: &L2Position, cols: &[String], v: Vocab) -> (bool, BitMask) {
+    fn run_prefix(pos: &L2Position, cols: &[String], prefix: &[u8], v: Vocab) -> (bool, BitMask) {
         let grammar = CompiledGrammar::compile(v);
         let mut mask = BitMask::with_len(grammar.mask_len());
+        let mut cache = NarrowCache::new();
         let applied = narrow_into(
             &mut mask,
+            &mut cache,
             &schema(),
             pos,
+            prefix,
             cols,
             grammar.vocab(),
             grammar.eos_bit(),
         );
         (applied, mask)
+    }
+
+    fn run(pos: &L2Position, cols: &[String], v: Vocab) -> (bool, BitMask) {
+        run_prefix(pos, cols, b"", v)
     }
 
     #[test]
@@ -167,7 +345,6 @@ mod tests {
 
     #[test]
     fn deferred_operand_classes_pass_through() {
-        // Boolean/temporal operand narrowing is deferred → no constraint (pass-through).
         assert!(
             !run(
                 &L2Position::ReValue(TypeClass::Boolean),
@@ -200,8 +377,19 @@ mod tests {
     }
 
     #[test]
+    fn source_ident_keeps_a_leading_bpe_prefix() {
+        // The B1 case: the leading sub-token of a fragmented classpath. `spide` is
+        // a strict prefix of the store/class paths — it must survive; `Xy` (off
+        // every source) must not.
+        let v = vocab(&[b"spide", b"Xy"]);
+        let (_applied, mask) = run(&L2Position::SourceIdent, &[], v);
+        assert!(bit(&mask, 0), "a leading classpath prefix survives");
+        assert!(!bit(&mask, 1), "a prefix off every source is masked");
+    }
+
+    #[test]
     fn member_masks_a_non_member_ident_but_keeps_structure() {
-        let v = vocab(&[b"n", b"phantom", b"."]);
+        let v = vocab(&[b"country", b"phantom", b"."]);
         let (applied, mask) = run(&L2Position::Member("A".to_owned()), &[], v);
         assert!(applied);
         assert!(bit(&mask, 0), "a real member survives");
@@ -210,8 +398,35 @@ mod tests {
     }
 
     #[test]
+    fn member_keeps_a_leading_prefix_then_narrows_the_continuation() {
+        // `countryName` fragments to `country` + `Name`. From the anchor the
+        // leading `count` survives; after emitting `country`, the continuation
+        // `Name` still reaches `countryName`, but `Xyz` does not.
+        let lead = vocab(&[b"count", b"Zzz"]);
+        let (_a, mask) = run(&L2Position::Member("A".to_owned()), &[], lead);
+        assert!(bit(&mask, 0), "the leading BPE prefix survives");
+        assert!(!bit(&mask, 1), "a prefix off every member is masked");
+
+        let cont = vocab(&[b"Name", b"Xyz"]);
+        let (_b, mask) = run_prefix(&L2Position::Member("A".to_owned()), &[], b"country", cont);
+        assert!(
+            bit(&mask, 0),
+            "a continuation reaching a longer member survives"
+        );
+        assert!(!bit(&mask, 1), "a continuation off every member is masked");
+    }
+
+    #[test]
+    fn a_completed_prefix_stops_narrowing() {
+        // Once the emitted bytes are a whole member followed by a boundary, the
+        // lexeme is done — no further narrowing applies (pass-through).
+        let v = vocab(&[b"anything"]);
+        let (applied, _mask) = run_prefix(&L2Position::Member("A".to_owned()), &[], b"country.", v);
+        assert!(!applied, "a completed name stops the narrower");
+    }
+
+    #[test]
     fn revalue_masks_the_disjoint_literal_class_only() {
-        // ids: 0 string lit, 1 number lit, 2 date lit, 3 an ident (navExpr operand).
         let (applied_n, numeric) = run(
             &L2Position::ReValue(TypeClass::Numeric),
             &[],
@@ -253,5 +468,68 @@ mod tests {
         assert!(bit(&mask, 0), "an emitted column survives");
         assert!(!bit(&mask, 1), "an unemitted column string is masked");
         assert!(bit(&mask, 2), "a non-string token is kept");
+    }
+
+    #[test]
+    fn column_keeps_a_leading_quote_then_narrows_the_body() {
+        // A column string `'cnt'` fragments to `'` / `cnt` / `'`. The opening quote
+        // survives at the anchor; mid-string, the body is narrowed to the emitted
+        // set.
+        let cols = ["cnt".to_owned()];
+        let (_a, mask) = run(&L2Position::Column, &cols, vocab(&[b"'", b"getInteger"]));
+        assert!(bit(&mask, 0), "the opening quote survives");
+        assert!(bit(&mask, 1), "a non-string token is untouched");
+        let (_b, mask) = run_prefix(
+            &L2Position::Column,
+            &cols,
+            b"'",
+            vocab(&[b"cnt'", b"ghost'"]),
+        );
+        assert!(bit(&mask, 0), "the emitted column body survives");
+        assert!(
+            !bit(&mask, 1),
+            "an unemitted column body is masked mid-string"
+        );
+    }
+
+    #[test]
+    fn the_anchor_mask_is_cached_and_reused() {
+        // A second narrow at the same anchor key must produce the identical mask
+        // (the cache copy), and a fresh cache the same result — so caching is a
+        // pure memo, not a behaviour change.
+        let grammar = CompiledGrammar::compile(vocab(&[b"country", b"phantom"]));
+        let mut cache = NarrowCache::new();
+        let mut first = BitMask::with_len(grammar.mask_len());
+        let mut second = BitMask::with_len(grammar.mask_len());
+        let pos = L2Position::Member("A".to_owned());
+        for dst in [&mut first, &mut second] {
+            narrow_into(
+                dst,
+                &mut cache,
+                &schema(),
+                &pos,
+                b"",
+                &[],
+                grammar.vocab(),
+                grammar.eos_bit(),
+            );
+        }
+        assert_eq!(
+            first, second,
+            "the cached mask equals the freshly built one"
+        );
+        cache.clear();
+        let mut fresh = BitMask::with_len(grammar.mask_len());
+        narrow_into(
+            &mut fresh,
+            &mut cache,
+            &schema(),
+            &pos,
+            b"",
+            &[],
+            grammar.vocab(),
+            grammar.eos_bit(),
+        );
+        assert_eq!(first, fresh, "clearing the cache rebuilds the same mask");
     }
 }

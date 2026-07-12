@@ -10,7 +10,12 @@ use std::path::Path;
 use crate::error::CorpusError;
 
 /// One line of `corpus/gold_queries.jsonl`.
+///
+/// Shared scaffolding across the replay targets; each reads a different subset of
+/// fields (e.g. the BPE-split target does not read `source_id`), so `dead_code`
+/// fires per-target even though every field is live somewhere in the suite.
 #[derive(Debug, Clone, serde::Deserialize)]
+#[allow(dead_code)]
 pub struct GoldRecord {
     /// Spider database id, e.g. `"car_1"`.
     pub db_id: String,
