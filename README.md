@@ -1,14 +1,14 @@
-# PureCard
+# PureCARD
 
 **A grammar- and schema-constrained decoder for [Legend Pure](https://legend.finos.org/).**
 
-PureCard sits between a language model's logits and its sampler and masks every
+PureCARD sits between a language model's logits and its sampler and masks every
 next token that cannot lead to a valid Pure query — so a model's output is valid
 **by construction** in a single forward pass, with no compile-repair round-trip.
 It is the Pure analogue of [PICARD](https://arxiv.org/abs/2109.05093) (the SQL
 constrained decoder), solved at the byte level.
 
-> **Guarantees validity — never faithfulness.** PureCard makes a query *parse*
+> **Guarantees validity — never faithfulness.** PureCARD makes a query *parse*
 > and *resolve against a schema*. It cannot make the query *mean what was asked*;
 > that is structurally out of reach at decode time.
 
@@ -29,7 +29,7 @@ overlay, the public API, and the oracle-driven test strategy.
 
 ## How it works
 
-At each decode step the host applies PureCard's mask before sampling:
+At each decode step the host applies PureCARD's mask before sampling:
 
 ```text
 logits  = model.forward(...)
@@ -73,8 +73,8 @@ The soundness backbone — replaying the committed gold corpus through the decod
 
 ## Python
 
-PureCard is the Rust half of a Rust/Python split. Python owns training, datagen,
-and the inference loop; PureCard exposes itself through a thin **PyO3** boundary
+PureCARD is the Rust half of a Rust/Python split. Python owns training, datagen,
+and the inference loop; PureCARD exposes itself through a thin **PyO3** boundary
 (a maturin wheel) that constrains only the final-query span of a trajectory. That
 boundary landed in M4 — see [`src/ffi.rs`](src/ffi.rs), the `python` Cargo
 feature, and the maturin wheel build.

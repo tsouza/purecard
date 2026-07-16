@@ -1,4 +1,4 @@
-"""Hermetic tests for the PureCard PyO3 boundary (M4).
+"""Hermetic tests for the PureCARD PyO3 boundary (M4).
 
 No model and no Legend engine: a hand-crafted byte-token vocabulary is enough to
 prove the binding faithfully marshals the Rust core — a valid Pure query streams
@@ -66,7 +66,7 @@ def test_an_illegal_token_is_masked_and_rejected(grammar):
     session.accept_token(0)
     assert session.is_complete()
     assert not _bit_set(session.allowed_mask(), 3)
-    with pytest.raises(purecard.PureCardError):
+    with pytest.raises(purecard.PureCARDError):
         session.accept_token(3)
     # The rejected token left the session untouched: still complete.
     assert session.is_complete()
@@ -74,14 +74,14 @@ def test_an_illegal_token_is_masked_and_rejected(grammar):
 
 def test_out_of_range_token_is_rejected(grammar):
     session = purecard.Session(grammar)
-    with pytest.raises(purecard.PureCardError):
+    with pytest.raises(purecard.PureCARDError):
         session.accept_token(999)
 
 
 def test_premature_eos_is_rejected(grammar):
     session = purecard.Session(grammar)
     assert not session.is_complete()
-    with pytest.raises(purecard.PureCardError):
+    with pytest.raises(purecard.PureCARDError):
         session.accept_token(VOCAB_LEN)
 
 
@@ -101,7 +101,7 @@ def test_reset_restores_a_fresh_stream(grammar):
 
 
 def test_schema_json_that_is_not_a_contract_raises(grammar):
-    with pytest.raises(purecard.PureCardError):
+    with pytest.raises(purecard.PureCARDError):
         purecard.Session(grammar, "{ not valid json")
 
 

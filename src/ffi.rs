@@ -24,7 +24,7 @@
 //! atomic refcount would buy a thread-safety the boundary never uses.
 
 // This whole module is a private FFI boundary: its items (`Grammar`, `Session`,
-// `PureCardError`, …) are reachable only from Python, never from the Rust public
+// `PureCARDError`, …) are reachable only from Python, never from the Rust public
 // API, so intra-doc links among them resolve to "private" items. That is correct
 // here — the docs describe the boundary's own internals — so the private-link
 // lint is scoped-off for this module alone (it exists to catch *public* docs
@@ -45,20 +45,20 @@ use crate::schema::{Schema, SchemaError};
 use crate::session::DecoderSession;
 use crate::vocab::Vocab;
 
-create_exception!(purecard, PureCardError, PyValueError);
+create_exception!(purecard, PureCARDError, PyValueError);
 
-/// A rejected token or malformed schema surfaces to Python as [`PureCardError`],
+/// A rejected token or malformed schema surfaces to Python as [`PureCARDError`],
 /// carrying the core error's `Display` text. `PyErr` and `DecodeError`/`SchemaError`
 /// map one-to-one, so `?` in a `#[pymethods]` body does the conversion.
 impl From<DecodeError> for PyErr {
     fn from(err: DecodeError) -> Self {
-        PureCardError::new_err(err.to_string())
+        PureCARDError::new_err(err.to_string())
     }
 }
 
 impl From<SchemaError> for PyErr {
     fn from(err: SchemaError) -> Self {
-        PureCardError::new_err(err.to_string())
+        PureCARDError::new_err(err.to_string())
     }
 }
 
@@ -141,7 +141,7 @@ impl Session {
     /// Open a session over `grammar`, optionally enforcing the L2 schema overlay
     /// parsed from `schema_json` (`None` is L1-only).
     ///
-    /// Raises [`PureCardError`] if `schema_json` is present but not a well-formed
+    /// Raises [`PureCARDError`] if `schema_json` is present but not a well-formed
     /// schema contract.
     #[new]
     #[pyo3(signature = (grammar, schema_json=None))]
@@ -175,7 +175,7 @@ impl Session {
         PyBytes::new(py, &self.mask)
     }
 
-    /// Advance by one whole token id, or raise [`PureCardError`] if the token is
+    /// Advance by one whole token id, or raise [`PureCARDError`] if the token is
     /// inadmissible (its bytes dead-end the recognizer, it is out of range, or it
     /// is a premature EOS). A rejected token leaves the session untouched (§8.5).
     fn accept_token(&mut self, id: u32) -> PyResult<()> {
@@ -209,6 +209,6 @@ fn purecard(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(compile_grammar, module)?)?;
     module.add_class::<Grammar>()?;
     module.add_class::<Session>()?;
-    module.add("PureCardError", module.py().get_type::<PureCardError>())?;
+    module.add("PureCARDError", module.py().get_type::<PureCARDError>())?;
     Ok(())
 }

@@ -1,6 +1,6 @@
-# PureCard Spec — correctness, corpus & engine
+# PureCARD Spec — correctness, corpus & engine
 
-_Part of the [PureCard spec](README.md); see also the [domain model](../domain-model.md)._
+_Part of the [PureCARD spec](README.md); see also the [domain model](../domain-model.md)._
 
 > The layered testing pyramid that operationalizes this strategy is in
 > [../methodology/decoder-testing.md](../methodology/decoder-testing.md).
@@ -57,7 +57,7 @@ Any production/rule a gold query violates is _wrong_ and must be relaxed to admi
 
 ## 13. Test corpus — contents, provenance, location
 
-The oracle-driven test strategy of §8 needs two concrete inputs: a large set of execution-verified gold Pure queries (the **soundness** oracle) and per-database schemas (the **L2** test inputs). Both are already assembled and ship **inside the PureCard workspace** under `corpus/` (committed to the PureCard repo). A fresh Claude on a fresh machine needs nothing but this checkout to run the entire soundness backbone; the corpus is self-contained and engine-free. This section documents exactly what is in `corpus/`, where it came from, and how to extend it.
+The oracle-driven test strategy of §8 needs two concrete inputs: a large set of execution-verified gold Pure queries (the **soundness** oracle) and per-database schemas (the **L2** test inputs). Both are already assembled and ship **inside the PureCARD workspace** under `corpus/` (committed to the PureCARD repo). A fresh Claude on a fresh machine needs nothing but this checkout to run the entire soundness backbone; the corpus is self-contained and engine-free. This section documents exactly what is in `corpus/`, where it came from, and how to extend it.
 
 ### 13.1 `corpus/gold_queries.jsonl` — the soundness oracle
 
@@ -65,7 +65,7 @@ The oracle-driven test strategy of §8 needs two concrete inputs: a large set of
 
 **Soundness testing over this file is FULLY OFFLINE — no Legend engine required.** It needs only the gold query text + the grammar + the model tokenizer's byte representation of tokens (§9). This is the whole point: the core correctness backbone runs in any CI with zero infrastructure.
 
-Provenance: distilled from the upstream **pure-lingua** project's Phase-2 output — `data/phase2/armA_*.jsonl` + `data/phase2/armC_*.jsonl`, keeping only `accepted=true` (execution-verified) records and de-duplicating query strings. The full `data/phase2/` directory is **231 MB** (not GitHub-committable); this distillation is **4.8 MB** and is committed to the PureCard repo.
+Provenance: distilled from the upstream **pure-lingua** project's Phase-2 output — `data/phase2/armA_*.jsonl` + `data/phase2/armC_*.jsonl`, keeping only `accepted=true` (execution-verified) records and de-duplicating query strings. The full `data/phase2/` directory is **231 MB** (not GitHub-committable); this distillation is **4.8 MB** and is committed to the PureCARD repo.
 
 Line schema (JSONL, one gold query per line):
 
@@ -128,19 +128,19 @@ Association spider::concert_singer::model::fk_1
 
 ### 13.3 Where it lives, and regenerating/extending
 
-|              | pure-lingua source repo                                   | PureCard workspace                                         |
+|              | pure-lingua source repo                                   | PureCARD workspace                                         |
 | ------------ | --------------------------------------------------------- | ---------------------------------------------------------- |
 | Gold queries | `data/phase2/armA_*.jsonl` + `armC_*.jsonl` (231 MB, raw) | `corpus/gold_queries.jsonl` (4.8 MB, distilled, committed) |
 | Schemas      | `data/pilot/armC_ctx_<db>.md` (+ OOS ctx briefs)          | `corpus/schemas/<db>.md` (committed)                       |
 | Legend stack | `infra/legend-stack/`                                     | `corpus/legend-stack/` (§14)                               |
 
-**The shipped `corpus/` is sufficient for M0–M3** (M1 L1 soundness, M2 perf, M3 L2 overlay) with no upstream access. To **regenerate or extend** the corpus — more schemas, more query shapes, new constructs the grammar does not yet exercise — the reader needs the full **pure-lingua repo + its Legend stack** (the datagen pipeline that produced `data/phase2/` and the ctx briefs). That is out of scope for building PureCard; note it only so a future maintainer knows the upstream provenance path exists. For the decoder itself, the committed corpus is the complete test spec.
+**The shipped `corpus/` is sufficient for M0–M3** (M1 L1 soundness, M2 perf, M3 L2 overlay) with no upstream access. To **regenerate or extend** the corpus — more schemas, more query shapes, new constructs the grammar does not yet exercise — the reader needs the full **pure-lingua repo + its Legend stack** (the datagen pipeline that produced `data/phase2/` and the ctx briefs). That is out of scope for building PureCARD; note it only so a future maintainer knows the upstream provenance path exists. For the decoder itself, the committed corpus is the complete test spec.
 
 ---
 
 ## 14. Legend engine setup (for the completeness oracle) + CI
 
-The **soundness** half of §8 is offline (§13.1). The **completeness** half (§8.2 — _do constrained generations actually compile?_ — and §8.3 — _does L2 output resolve on the real model?_) needs a **live Legend engine**. This section documents that engine, taken verbatim from the real infra files (`infra/legend-stack/docker-compose.yml`, `engine-config.yml`, `sdlc-config.yml`) and the Gate-0 probe findings (`docs/probes/gate0-findings.md`) — not invented. The stack ships to the PureCard workspace under `corpus/legend-stack/`.
+The **soundness** half of §8 is offline (§13.1). The **completeness** half (§8.2 — _do constrained generations actually compile?_ — and §8.3 — _does L2 output resolve on the real model?_) needs a **live Legend engine**. This section documents that engine, taken verbatim from the real infra files (`infra/legend-stack/docker-compose.yml`, `engine-config.yml`, `sdlc-config.yml`) and the Gate-0 probe findings (`docs/probes/gate0-findings.md`) — not invented. The stack ships to the PureCARD workspace under `corpus/legend-stack/`.
 
 ### 14.1 The stack
 
@@ -192,6 +192,6 @@ Two test classes with very different infrastructure cost:
 | **Soundness** — replay 5,034 gold queries through L1 (§8.1); L2 replay against `corpus/schemas/` (§8.1 L2-mode) | **Nothing** — just the committed `corpus/` + the model tokenizer bytes. Fully offline, hermetic. | **Run in EVERY CI run.** Zero infra. This is the core correctness backbone.                                                                                                                                                                         |
 | **Completeness** — constrained generations must compile (§8.2); L2 resolves on the real model (§8.3)            | **A live Legend engine** — two amd64 images, ≈ 1.7 GB, docker-compose up + health-wait.          | **Separate engine-backed job.** Either (a) spin the compose up in a dedicated CI job on an **x86 runner** (feasible; document the health-wait of §14.1), or (b) gate it as **opt-in / nightly / local-only** to keep the main CI fast and hermetic. |
 
-**Recommendation:** run **offline soundness in every CI run**; run **completeness as a separate engine-backed job — nightly or on-demand** — on an x86 runner. State plainly to the reader: **the core correctness backbone (soundness replay of all 5,034 gold queries) needs NO engine**, so PureCard is CI-testable out of the box with only the committed corpus; the Legend engine is required **only** for the completeness half, and that half can be deferred to a nightly/on-demand job without weakening the always-on soundness gate. (The §8.7 CI gate remains the target — 100% gold soundness always, 100% constrained-generation compile rate on the completeness job.)
+**Recommendation:** run **offline soundness in every CI run**; run **completeness as a separate engine-backed job — nightly or on-demand** — on an x86 runner. State plainly to the reader: **the core correctness backbone (soundness replay of all 5,034 gold queries) needs NO engine**, so PureCARD is CI-testable out of the box with only the committed corpus; the Legend engine is required **only** for the completeness half, and that half can be deferred to a nightly/on-demand job without weakening the always-on soundness gate. (The §8.7 CI gate remains the target — 100% gold soundness always, 100% constrained-generation compile rate on the completeness job.)
 
 ---

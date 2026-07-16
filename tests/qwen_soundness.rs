@@ -40,7 +40,7 @@ use fixture_dbs::FIXTURE_DBS;
 use l2::load_schema;
 
 /// Qwen's in-vocab stop ids (M2): the model's real EOS ids live *inside* the
-/// vocabulary, distinct from PureCard's reserved EOS bit at `vocab.len()`.
+/// vocabulary, distinct from PureCARD's reserved EOS bit at `vocab.len()`.
 const QWEN_ENDOFTEXT: u32 = 151643;
 const QWEN_IM_END: u32 = 151645;
 

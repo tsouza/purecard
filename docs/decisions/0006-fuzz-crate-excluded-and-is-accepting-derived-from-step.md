@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-11
-- **Deciders:** PureCard decoder engineer (M5 hardening)
+- **Deciders:** PureCARD decoder engineer (M5 hardening)
 
 ## Context
 

@@ -3,7 +3,7 @@
 - **Status:** Draft — ready to implement
 - **Created:** 2026-07-11
 - **Owner:** purecard engineer (Thiago)
-- **Review source:** `scratchpad/adversarial-review.md` (PureCard @ `be2a052`) — 2 blockers (B1, B2), 5 majors (M1–M5), 5 minors.
+- **Review source:** `scratchpad/adversarial-review.md` (PureCARD @ `be2a052`) — 2 blockers (B1, B2), 5 majors (M1–M5), 5 minors.
 - **Spec refs:** `docs/spec/schema.md` §6.5–§6.6 (N1/N2/N3/N6, T1), §9.3 (host EOS/specials), §4.5 (per-scope mask cache). Constitution §1 (pure, dep-light, forbid-unsafe), §2 (cache/mirror CI fetches, no shell), §3 (no skips), §4 (DRY, library-before-writing).
 
 ---
@@ -195,7 +195,7 @@ fn byte_decoder() -> HashMap<char, u8> {
 
 Build `Vocab::from_byte_tokens` in `get_vocab` id-order; map real EOS `<|im_end|>` = 151645 → the reserved EOS bit; dead-byte other specials. The fixture path is overridable by env `PURECARD_QWEN_TOKENIZER`, so the **nightly full lane** points it at the `actions/cache`-restored full `tokenizer.json` — no `#[test]` ever fetches.
 
-**M1 — `self_check` over real ids (`src/selfcheck.rs`).** Delete `longest_match`, `Unsegmentable`, `SMOKE`, `self_check_smoke`. New signature `pub fn self_check(grammar: &CompiledGrammar, samples: &[&[u32]]) -> Result<(), SelfCheckError>` where each sample is a **host-produced token-id stream** (host tokenizes; PureCard only verifies admissibility). Per sample: fresh session, assert `allowed_mask().test(id)` else `DeadEnd { query_index, step, id }` → `accept_token(id)` → `is_complete()` else `Incomplete`. Drop `pos` → `step` (token index). It is thin over `replay_tokens`' contract. New `tests/selfcheck_gold.rs` tokenizes gold (Tier-1 split vocab always; Tier-2 slice under feature) and runs `self_check` for both `new` and `with_schema`, wired as a **mandatory** `just selfcheck-gold` gate.
+**M1 — `self_check` over real ids (`src/selfcheck.rs`).** Delete `longest_match`, `Unsegmentable`, `SMOKE`, `self_check_smoke`. New signature `pub fn self_check(grammar: &CompiledGrammar, samples: &[&[u32]]) -> Result<(), SelfCheckError>` where each sample is a **host-produced token-id stream** (host tokenizes; PureCARD only verifies admissibility). Per sample: fresh session, assert `allowed_mask().test(id)` else `DeadEnd { query_index, step, id }` → `accept_token(id)` → `is_complete()` else `Incomplete`. Drop `pos` → `step` (token index). It is thin over `replay_tokens`' contract. New `tests/selfcheck_gold.rs` tokenizes gold (Tier-1 split vocab always; Tier-2 slice under feature) and runs `self_check` for both `new` and `with_schema`, wired as a **mandatory** `just selfcheck-gold` gate.
 
 ---
 
@@ -203,7 +203,7 @@ Build `Vocab::from_byte_tokens` in `get_vocab` id-order; map real EOS `<|im_end|
 
 **M2 — Qwen EOS/specials contract.** The reserved EOS bit is synthetic index `V` (`mask_len = V+1`); Qwen's real stop `<|im_end|>` = 151645 is **in-vocab**.
 
-- **Document** in `ffi.rs` (Session doc) + a `docs/spec/` §9.3 note: the host maps its real EOS id ↔ the reserved bit `V`; when PureCard sets bit `V` the host may sample its real EOS; the host must never forward the real EOS id into `accept_token`; specials must be excluded from `vocab_bytes` or given bytes the PDA treats as dead inside the query span.
+- **Document** in `ffi.rs` (Session doc) + a `docs/spec/` §9.3 note: the host maps its real EOS id ↔ the reserved bit `V`; when PureCARD sets bit `V` the host may sample its real EOS; the host must never forward the real EOS id into `accept_token`; specials must be excluded from `vocab_bytes` or given bytes the PDA treats as dead inside the query span.
 - **Assert** (unit + the gold lane): (a) the reserved bit is set **iff** `is_complete()`; (b) every declared special id (`im_start`, `im_end`, `endoftext`, FIM `fim_*`, `repo_name`) is **inadmissible mid-query** at every step.
 
 **M5 — API drift (spec §9.1).** The code's `new(g)` + `with_schema(g, schema)` + `allowed_mask(&mut self)` is the better shape (reused buffer needs `&mut`; the split gives clean L1/L1+L2 parity) than the spec's single `new(g, Option<Schema>)`/`&self`. **No code change** — record the intentional deviation + rationale as a new ADR in `docs/decisions/` and in `docs/domain-model.md`; flag the pure-research repo to update §9.1.

@@ -1,6 +1,6 @@
-# Testing strategy (PureCard decoder)
+# Testing strategy (PureCARD decoder)
 
-PureCard is a byte-level grammar/schema-constrained decoder for Legend Pure — a Rust library plus a thin, feature-gated PyO3 boundary (`docs/spec/architecture.md` §9), not a web server. Its correctness story is not the server pyramid in `docs/methodology/testing.md`; it is the **oracle-driven** strategy of `docs/spec/testing.md` §8, backed by two assets already committed to this workspace: `corpus/gold_queries.jsonl` (5,034 execution-verified gold Pure queries over 161 databases, §13.1) and `corpus/legend-stack/` (the pinned Legend engine 4.113.0 / SDLC 0.195.0, §14). This document is the layered-testing map for that strategy: what each layer proves, how its *valid inputs are mechanically generated*, where it lives, and which CI lane runs it.
+PureCARD is a byte-level grammar/schema-constrained decoder for Legend Pure — a Rust library plus a thin, feature-gated PyO3 boundary (`docs/spec/architecture.md` §9), not a web server. Its correctness story is not the server pyramid in `docs/methodology/testing.md`; it is the **oracle-driven** strategy of `docs/spec/testing.md` §8, backed by two assets already committed to this workspace: `corpus/gold_queries.jsonl` (5,034 execution-verified gold Pure queries over 161 databases, §13.1) and `corpus/legend-stack/` (the pinned Legend engine 4.113.0 / SDLC 0.195.0, §14). This document is the layered-testing map for that strategy: what each layer proves, how its *valid inputs are mechanically generated*, where it lives, and which CI lane runs it.
 
 The guarantee under test is asymmetric and silent (§8): a **soundness** bug masks a valid continuation and permanently blinds the model; a **completeness** bug lets it walk into a dead end the compiler rejects. Neither is visible without an oracle. That is why every §8 layer is built, and why the numeric floors are PROTECTED ratchets.
 
@@ -18,7 +18,7 @@ The guarantee under test is asymmetric and silent (§8): a **soundness** bug mas
 
 ## Why "e2e is not unit" here
 
-For a thin server, an e2e request round-trip exercises little more than a unit, so "e2e ≈ unit" is a defensible shortcut. For PureCard that equivalence is a **misread**, and the reason is categorical, not a matter of degree.
+For a thin server, an e2e request round-trip exercises little more than a unit, so "e2e ≈ unit" is a defensible shortcut. For PureCARD that equivalence is a **misread**, and the reason is categorical, not a matter of degree.
 
 - A **unit** test checks one pure Rust function against hand-picked inputs — `pda.rs` byte-transition tables, `mask.rs` set intersection, `scope.rs`/`narrow.rs` N/T rules. It proves a *local* contract in isolation, with no oracle beyond the golden value the author wrote down.
 - **e2e** proves an *emergent* property that no unit can stand in for: that masking the logits of a real model, token by token, yields output that a **real external compiler** (Legend engine 4.113.0, §8.2/§14) accepts — through the real API surface (`DecoderSession` → PyO3, §9). The oracle is a ~1.7 GB multi-service Java stack that lives outside the process and outside the language. Nothing in a `#[cfg(test)]` module can substitute for "does Legend's type-checker return `TabularDataSet` or a compile error?"
@@ -29,9 +29,9 @@ So the decoder pyramid is stretched at the top: "unit" is a single `accept_token
 
 **Verdict: DO NOT fork. Reuse the two stock endpoints unchanged. Do not settle for "just compile" either.**
 
-The steelman for forking is real and worth stating: fork the Legend monorepo, add a `/parseAst` endpoint, and diff PureCard's parse tree against Legend's for *structural agreement*, not just pass/fail — which would let us *localize* a soundness bug (which production is wrong) and catch queries that compile only by accident. It collapses on two facts:
+The steelman for forking is real and worth stating: fork the Legend monorepo, add a `/parseAst` endpoint, and diff PureCARD's parse tree against Legend's for *structural agreement*, not just pass/fail — which would let us *localize* a soundness bug (which production is wrong) and catch queries that compile only by accident. It collapses on two facts:
 
-1. **PureCard emits masks, not an AST** (§9.1). There is no PureCard parse tree to diff. For a *recognizer*, the invariant is language **membership**, not AST-equality: does the constrained byte-string **parse** and **compile**? AST-equality would only apply if PureCard deliberately built a parse tree — it does not, by design (§3.1, §4.4).
+1. **PureCARD emits masks, not an AST** (§9.1). There is no PureCARD parse tree to diff. For a *recognizer*, the invariant is language **membership**, not AST-equality: does the constrained byte-string **parse** and **compile**? AST-equality would only apply if PureCARD deliberately built a parse tree — it does not, by design (§3.1, §4.4).
 2. **`grammarToJson/lambda` already returns Legend's parsed AST** as protocol JSON (§14.2, Gate-0 findings). A hand-added "AST endpoint" would expose exactly what this stock endpoint already exposes — **zero new signal**.
 
 Against that zero signal, forking is a real, recurring cost that the constitution weighs against directly: you inherit a ~1.7 GB multi-service build, you must track upstream 4.113.0, and you take on supply-chain and maintenance liability for a Java monorepo — all to re-expose an existing endpoint. That fails the "library before writing / don't gold-plate" bar and the §2 "cache or mirror, don't re-fetch" spirit.

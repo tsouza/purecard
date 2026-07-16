@@ -76,7 +76,7 @@ test("TODO/FIXME/XXX in a doc-comment are flagged", () => {
 
 test("clean doc-comments produce no hits", () => {
   const src = [
-    "//! # PureCard",
+    "//! # PureCARD",
     "//! A grammar- and schema-constrained decoder for Legend Pure.",
     "/// Build a vocabulary from a list of token byte-strings.",
   ].join("\n");

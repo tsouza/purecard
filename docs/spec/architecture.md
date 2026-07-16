@@ -1,4 +1,4 @@
-# PureCard Spec — Architecture
+# PureCARD Spec — Architecture
 
 _[Spec index](README.md) · [domain model](../domain-model.md)_
 
@@ -60,7 +60,7 @@ loop each decode step:
 
 ## 4. The masking algorithm (performance core)
 
-Naive per-token PDA replay at every step over a 150k vocab is far too slow. PureCard follows the **xgrammar-style split** into context-independent (cacheable) and context-dependent (runtime) token sets, with a per-state mask cache.
+Naive per-token PDA replay at every step over a 150k vocab is far too slow. PureCARD follows the **xgrammar-style split** into context-independent (cacheable) and context-dependent (runtime) token sets, with a per-state mask cache.
 
 ### 4.1 Compile once
 
@@ -161,12 +161,12 @@ sess.is_complete()                # bool
 
 ### 9.3 Integration boundary (host code lives elsewhere, stated so the API is right)
 
-PureCard is the **Rust half of a Python/Rust split**. Python owns training, datagen, and orchestration (it is ecosystem-bound: MLX, HuggingFace, tokenizers); Rust owns the durable, performance- and correctness-critical serving kernels. PureCard exposes itself via PyO3 to a Python inference loop and constrains **only the final-query span** of an agentic trajectory (not the whole trajectory).
+PureCARD is the **Rust half of a Python/Rust split**. Python owns training, datagen, and orchestration (it is ecosystem-bound: MLX, HuggingFace, tokenizers); Rust owns the durable, performance- and correctness-critical serving kernels. PureCARD exposes itself via PyO3 to a Python inference loop and constrains **only the final-query span** of an agentic trajectory (not the whole trajectory).
 
 Host-side contract for the inference loop (out of scope to build here):
 
 - The host provides the vocabulary as **raw byte strings per token id**, handling the tokenizer's metaspace / leading-space conventions (byte-BPE vs SentencePiece) _before_ handing bytes over. Getting this exactly right is a soundness prerequisite; the decoder treats tokens as opaque byte strings.
 - The host builds `Schema` from the PMCD / MCP tools and passes it (as JSON) at session init.
 - The host **activates constraint only over the final-query span** of a trajectory (a mode switch), not over tool calls or reasoning text.
-- The host owns sampling; PureCard only masks.
+- The host owns sampling; PureCARD only masks.
 - Concrete loop: create a `Session` with the query's schema at the moment the final-query span begins; each step, `&`-mask the logits; sample; `accept_token`; stop when `is_complete()` and EOS is sampled.

@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-//! # PureCard
+//! # PureCARD
 //!
-//! A grammar- and schema-constrained decoder for **Legend Pure**. PureCard sits
+//! A grammar- and schema-constrained decoder for **Legend Pure**. PureCARD sits
 //! between a language model's logits and its sampler and masks every next token
 //! that cannot lead to a valid Pure query — so output is valid *by construction*
 //! in a single forward pass, with no compile-repair round-trip.
@@ -163,7 +163,7 @@ pub use vocab::Vocab;
 /// faithful ⊂ schema-consistent ⊂ syntactic
 /// ```
 ///
-/// PureCard moves a model's output into [`Syntactic`](GuaranteeLevel::Syntactic)
+/// PureCARD moves a model's output into [`Syntactic`](GuaranteeLevel::Syntactic)
 /// (L1) and, when given a schema, into
 /// [`SchemaConsistent`](GuaranteeLevel::SchemaConsistent) (L2). It *cannot* reach
 /// [`Faithful`](GuaranteeLevel::Faithful) (L3): a logits mask sees the schema and
@@ -176,12 +176,12 @@ pub enum GuaranteeLevel {
     /// phantom classes or properties, no type mismatch.
     SchemaConsistent,
     /// **L3.** The query actually answers the question that was asked.
-    /// Structurally unreachable at decode time — PureCard never claims it.
+    /// Structurally unreachable at decode time — PureCARD never claims it.
     Faithful,
 }
 
 impl GuaranteeLevel {
-    /// The strongest guarantee PureCard can enforce at decode time:
+    /// The strongest guarantee PureCARD can enforce at decode time:
     /// schema-consistency (L2). [`Faithful`](GuaranteeLevel::Faithful) (L3) is
     /// out of reach by construction.
     pub const MAX_ENFORCEABLE: GuaranteeLevel = GuaranteeLevel::SchemaConsistent;
@@ -196,7 +196,7 @@ impl GuaranteeLevel {
         self >= other
     }
 
-    /// Whether PureCard can actually enforce this level — i.e. it is no stronger
+    /// Whether PureCARD can actually enforce this level — i.e. it is no stronger
     /// than [`MAX_ENFORCEABLE`](GuaranteeLevel::MAX_ENFORCEABLE). L3 is not
     /// enforceable.
     #[must_use]

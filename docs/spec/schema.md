@@ -1,6 +1,6 @@
-# PureCard Spec — L2 schema-consistency
+# PureCARD Spec — L2 schema-consistency
 
-_Part of the [PureCard spec](README.md); see also the [domain model](../domain-model.md)._
+_Part of the [PureCARD spec](README.md); see also the [domain model](../domain-model.md)._
 
 ## 6. L2 — schema-consistency (the schema-aware constraint level)
 

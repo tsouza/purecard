@@ -1,7 +1,7 @@
-# PureCard test corpus
+# PureCARD test corpus
 
 Distilled from the **pure-lingua** project (the NL→Legend-Pure training effort) — the correctness
-oracle backbone for PureCard. See [`../docs/spec/testing.md`](../docs/spec/testing.md) §13 for how these are used.
+oracle backbone for PureCARD. See [`../docs/spec/testing.md`](../docs/spec/testing.md) §13 for how these are used.
 
 ## Contents
 
