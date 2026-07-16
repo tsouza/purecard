@@ -140,10 +140,14 @@ tdsGetter  = "getInteger" | "getFloat" | "getString" | "getBoolean" ;
 classpath  = ident { "::" ident } ;                    (* e.g. spider::car_1::model::default::Countries *)
 binderVar  = ident ;                                   (* lambda HEADER only: the bare "x" in  x|...       *)
 refVar     = "$" ident ;                               (* expression BODY only: the "$x" in  $x.name       *)
-literal    = strlit | number | boollit ;
+literal    = strlit | number | boollit | dateLit | milestoneLit ;
 strlit     = "'" { schar | "''" } "'" ;                (* SINGLE quotes only; embedded quote doubled ''   *)
 number     = [ "-" ] digit { digit } [ "." digit { digit } ] ;
 boollit    = "true" | "false" ;
+dateLit    = "%" dateChar { dateChar } ;               (* numeric date/time: %2018-03-17[T07:13:53]        *)
+dateChar   = digit | "-" | "T" | ":" ;
+milestoneLit = "%" lower { lower } ;                   (* symbolic milestoning: %latest / %latestdate      *)
+lower      = "a".."z" ;
 int        = digit { digit } ;
 strOrList  = strlit | "[" [ strlit { "," strlit } ] "]" ;  (* single string OR bracketed list (MAY be []); arm-A restrict/groupBy keys *)
 ident      = alpha { alnum | "_" } ;                   (* camelCase props, PascalCase classes, snake cols *)
@@ -158,6 +162,7 @@ digit      = "0".."9" ;
 - **Single-quote strings only.** Double quotes never appear; an embedded quote is written `''` (15 gold queries exercise the doubling). A grammar admitting `"..."` is a compile-unsound over-approximation — keep `strlit` single-quote-only.
 - **`SortDirection.ASC` / `SortDirection.DESC`** are the only enum-shaped literals in the pilot corpus (368 occurrences), and they occur **only inside `sort`** (via `sortdir`), never as a comparison operand. They are a *Pure builtin*, not a schema enumeration, so they are **not** an L2 N4/N5 position — L1 fixes their `EnumPath "." IDENT` shape as a fixed terminal in `sortdir`, and L2 does not narrow them. **Schema-enum comparison** (`$x.status == SomeEnum.ACTIVE`, an `EnumRef` property vs an enum value) is what L2's N4/T5 target; it does **not** occur in the current Spider-derived corpus, so per §5 the emitted grammar carries **no** enum-literal *operand* production yet. That operand production (`enumLit = classpath "." ident`, feeding `term`) is **reserved**: add it on the first gold query that compares an enum, at which point L2's N4/T5 narrow its RHS. See §7 (the N4/T5 contract rows) and §6.5 N4 / §6.6 T5, which mark the same rules forward-looking.
 - **`binderVar` vs `refVar`.** The lambda *header* names the variable bare (`x|`); every *use* in the body is `$`-prefixed (`$x.`). L1 keeps them distinct so a stray bare `x.name` or `$x|` is rejected; L2 binds the header name and resolves `$`-uses against it (§6.4, transition S2).
+- **Two kinds of `%`-literal.** A `%` opens either a *numeric* date/time literal (`dateLit`, `%2018-03-17[T07:13:53]`) or a *symbolic* milestoning literal (`milestoneLit`, `%latest` / `%latestdate`). They are disjoint at the first byte after `%`: a `dateChar` (digit / `-` / `T` / `:`) opens `dateLit`, a lowercase letter opens `milestoneLit`, and a bare `%` (or any other byte) is a dead state. `%latest` is not in the Spider-derived gold corpus; it is oracle'd by the **modern-dialect seed corpus** (§5.8) — the fine-tuned model emits it in `Class.all(%latest)`, bitemporal `Class.all(%latest, %latest)`, milestoned `.PROP(%latest, %latest)`, and comparison-operand positions (gap report §5/G2). Like `dateLit`, `milestoneLit` is a `Lexeme::Date` L2 pass-through — no schema narrowing.
 
 ### 5.6 Deliberate over-approximations (oracle-driven tightening)
 
@@ -169,6 +174,7 @@ The grammar over-approximates validity where a CFG cannot cheaply enforce a cons
 - **Predicate arity.** `boolPred` arguments are loosely typed (`predArg`); the exact arg shape per predicate (lambda vs value) is left to L2/compiler.
 - **Typed-binder multiplicity.** `mult` admits `int` as well as `1`/`*`; the corpus exercises only `1` and `*` (`TDSRow[1]`, `TDSRow[*]`). The `int` alternative is a deliberate, sound widening (it admits more, never less); an integer multiplicity a model emits is caught by the compiler, not L1.
 - **`restrict`/`groupBy` string-or-list.** The arm-A relational steps accept a bare `strlit` *or* a bracketed list (`strOrList`); L1 does not require the list form even where a single column would suffice.
+- **Symbolic milestoning literal shape.** `milestoneLit = "%" lower { lower }` admits any `%`-prefixed lowercase run, not only the two known symbols `%latest` / `%latestdate`. This mirrors how the machine already admits *any* identifier where a reducer/step/property name is expected: L1 fixes the `% <lowercase>+` shape and the compiler/L2 reject an unknown milestone symbol. Uppercase and digit boundaries stay dead (`tests/precision_reject.rs`), so the widening cannot silently grow to `%<anything>`.
 
 ### 5.7 Observed construct inventory (the empirical spec)
 
@@ -225,10 +231,25 @@ core principle).
 
 **Arm-C class-navigation constructs** (the 7.8% minority idiom):
 
-| Construct | Queries | Grammar production |
-|---|---:|---|
-| `.all()` | 395 | `classNavSource` (arm-C source) |
-| `project(...)` | 527 | `project` |
-| `take(int)` | 22 | `take` |
-| `olapGroupBy(...)` / `->rowNumber()` | 3 / 3 | `olapGroupBy` / `reducer` |
-| `let … = …` block form | 69 | `blockQuery` / `letBinding` |
+| Construct                            | Queries | Grammar production              |
+| ------------------------------------ | ------: | ------------------------------- |
+| `.all()`                             | 395     | `classNavSource` (arm-C source) |
+| `project(...)`                       | 527     | `project`                       |
+| `take(int)`                          | 22      | `take`                          |
+| `olapGroupBy(...)` / `->rowNumber()` | 3 / 3   | `olapGroupBy` / `reducer`       |
+| `let … = …` block form               | 69      | `blockQuery` / `letBinding`     |
+
+### 5.8 Modern-dialect seed corpus (a second oracle)
+
+The Spider-derived `corpus/gold_queries.jsonl` (§5.7) is frozen at 5,034 queries;
+it never exercised some **modern Legend Pure** constructs the fine-tuned model
+also emits. Those are seeded in a *separate*, provenance-distinct file,
+`corpus/modern_dialect_seeds.jsonl`, so the 5,034-query gold corpus and every doc
+citation of its count stay untouched. `tests/modern_dialect_soundness.rs` replays
+each seed through the real byte-PDA with the same killer property as §8.1 (never
+dead, ends accepting) and classifies it to its declared envelope. The seed corpus
+is the oracle for anything added here — do **not** add a production without a seed.
+
+| Construct                             | Seeds | Grammar production    | Gap report |
+| ------------------------------------- | ----: | --------------------- | ---------- |
+| `%latest` / `%latestdate` milestoning | 5     | `milestoneLit` (§5.4) | G2         |

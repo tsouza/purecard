@@ -103,3 +103,38 @@ def test_reset_restores_a_fresh_stream(grammar):
 def test_schema_json_that_is_not_a_contract_raises(grammar):
     with pytest.raises(purecard.PureCardError):
         purecard.Session(grammar, "{ not valid json")
+
+
+# A whole-token vocabulary spelling a %latest milestoning query (gap report G2):
+# a milestoned source open, the symbolic literal, the source close, a step, a
+# digit, the closer, and the empty token. Token id == list index.
+LATEST_VOCAB = [
+    b"|finos::trade::Trade.all(",
+    b"%latest",
+    b")",
+    b"->take(",
+    b"1",
+    b")",
+    b"",
+]
+LATEST_EOS_ID = 6
+LATEST_GOLD = [0, 1, 2, 3, 4, 5]
+
+
+def test_a_latest_milestoning_query_streams_end_to_end():
+    """A `%latest` milestoning query marshals through the PyO3 boundary end to
+    end — the symbolic literal is admissible at each step and the stream completes
+    (gap report G2)."""
+    grammar = purecard.compile_grammar("", LATEST_VOCAB, LATEST_EOS_ID)
+    session = purecard.Session(grammar)
+    assert not session.is_complete()
+    for token_id in LATEST_GOLD:
+        mask = session.allowed_mask()
+        assert _bit_set(mask, token_id), f"gold token {token_id} must be admissible"
+        session.accept_token(token_id)
+    assert session.is_complete()
+    # The completed stream sets the reserved EOS bit — at index `len(vocab)` (one
+    # past the last token id), exactly as the base fixture asserts, not at the
+    # `eos_id` field — and EOS is then acceptable.
+    assert _bit_set(session.allowed_mask(), len(LATEST_VOCAB))
+    session.accept_token(len(LATEST_VOCAB))

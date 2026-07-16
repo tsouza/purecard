@@ -148,6 +148,11 @@ pub enum State {
     SawPercent,
     /// Inside a `%`-prefixed date/time literal (`%2018-03-17T07:13:53`).
     InDateLit,
+    /// Inside a `%`-prefixed *symbolic* milestoning literal (`%latest`,
+    /// `%latestdate`): a `%` sigil followed by lowercase ASCII letters. Distinct
+    /// from [`InDateLit`](State::InDateLit) so a milestone symbol and a numeric
+    /// date literal never share a byte class; value-terminal like `InDateLit`.
+    InMilestoneLit,
     /// Just consumed `$`; a `refVar` identifier must follow.
     AfterDollar,
     /// Just consumed `.`; a property / getter / `all` identifier must follow.
@@ -217,6 +222,7 @@ impl State {
             State::InStrLit { escaped: true } => "InStrLit(pendingQuote)",
             State::SawPercent => "SawPercent",
             State::InDateLit => "InDateLit",
+            State::InMilestoneLit => "InMilestoneLit",
             State::AfterDollar => "AfterDollar",
             State::AfterDot => "AfterDot",
             State::AfterArrow => "AfterArrow",
@@ -286,13 +292,14 @@ impl State {
             State::SawGt => 39,
             State::SawLt => 40,
             State::SawAmp => 41,
+            State::InMilestoneLit => 42,
         }
     }
 
     /// The number of distinct automaton states — the length a per-state cache
     /// (`Vec<_>` keyed by [`index`](State::index)) must have. One more than the
     /// largest [`index`](State::index).
-    pub const COUNT: usize = 42;
+    pub const COUNT: usize = 43;
 
     /// The lexeme class this state is *inside*, if any (`None` = an inter-lexeme
     /// or structural position).
@@ -313,7 +320,7 @@ impl State {
             State::SawNumSign | State::InNumberInt | State::NeedFracDigit | State::InNumberFrac => {
                 Some(LexKind::Number)
             }
-            State::SawPercent | State::InDateLit => Some(LexKind::Date),
+            State::SawPercent | State::InDateLit | State::InMilestoneLit => Some(LexKind::Date),
             State::InStrLit { .. } => Some(LexKind::Str),
             _ => None,
         }
@@ -764,11 +771,15 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
             }
         }
 
-        // `%` was just consumed; a date literal must carry at least one date
-        // character, so a bare `%` (`take(%)`) dies.
+        // `%` was just consumed. A digit / `-` / `T` / `:` opens a numeric date
+        // literal; a lowercase letter opens a symbolic milestoning literal
+        // (`%latest`, `%latestdate`). Any other byte — including a bare `%`
+        // (`take(%)`) — is a dead state.
         State::SawPercent => {
             if is_date_char(byte) {
                 Step::Next(State::InDateLit)
+            } else if byte.is_ascii_lowercase() {
+                Step::Next(State::InMilestoneLit)
             } else {
                 Step::Dead
             }
@@ -777,6 +788,18 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
         State::InDateLit => {
             if is_date_char(byte) {
                 Step::Next(State::InDateLit)
+            } else {
+                step(State::AfterValue, stack_top, byte)
+            }
+        }
+
+        // A symbolic milestoning literal is a run of lowercase letters; it is
+        // value-terminal, so any other byte closes it and re-dispatches from
+        // `AfterValue` (a space at end-of-stream lands in `AfterValue`, making
+        // `%latest` accepting exactly like a numeric date literal).
+        State::InMilestoneLit => {
+            if byte.is_ascii_lowercase() {
+                Step::Next(State::InMilestoneLit)
             } else {
                 step(State::AfterValue, stack_top, byte)
             }
@@ -1177,6 +1200,7 @@ mod tests {
         State::InStrLit { escaped: true },
         State::SawPercent,
         State::InDateLit,
+        State::InMilestoneLit,
         State::AfterDollar,
         State::AfterDot,
         State::AfterArrow,
@@ -1236,7 +1260,7 @@ mod tests {
                 state.name()
             );
         }
-        for state in [State::SawPercent, State::InDateLit] {
+        for state in [State::SawPercent, State::InDateLit, State::InMilestoneLit] {
             assert_eq!(
                 state.lexeme_kind(),
                 Some(LexKind::Date),
@@ -1505,6 +1529,7 @@ mod tests {
             State::InNumberInt,
             State::InNumberFrac,
             State::InDateLit,
+            State::InMilestoneLit,
             State::InStrLit { escaped: true },
         ] {
             assert!(
@@ -1746,6 +1771,67 @@ mod tests {
         assert!(accepts(
             "|db::Db->tableReference('default','T')->tableToTDS()\
              ->filter(r: meta::pure::tds::TDSRow[1]|$r.getDateTime('d') < %2018-03-17T07:13:53)"
+        ));
+    }
+
+    #[test]
+    fn milestoning_literal_operand_accepts() {
+        // `%latest` / `%latestdate` are symbolic milestoning literals usable as an
+        // `.all(...)` argument, a milestoned `.PROP(...)` argument, and a
+        // comparison operand (gap report G2).
+        assert!(accepts("|X.all(%latest)->project([p|$p.n], ['n'])"));
+        assert!(accepts("|X.all(%latest, %latest)->take(1)"));
+        assert!(accepts("|X.all(%latestdate)->take(1)"));
+        assert!(accepts(
+            "|X.all()->filter(x|$x.FACET(%latest, %latest).seg == 'a')"
+        ));
+        // A bare `%latest` completes at end-of-stream (value-terminal).
+        assert!(accepts("|X.all()->filter(x|$x.d < %latest)"));
+    }
+
+    #[test]
+    fn a_milestoning_literal_is_lowercase_letters_after_the_percent() {
+        // Bare `%` is still a dead state (the existing date-literal pin).
+        assert!(dies("|X.all()->take(%)"));
+        // The symbolic literal is lowercase letters only: an uppercase or digit
+        // first byte after `%` is not a milestone symbol, and mid-literal a digit
+        // or uppercase closes the lexeme — so `%latest1`/`%latestX` stop the token
+        // at `%latest` and the trailing byte has no legal continuation here.
+        assert!(dies("|X.all()->take(%Latest)"));
+        assert!(dies("|X.all()->take(%latest1)"));
+        assert!(dies("|X.all()->take(%latestX)"));
+        // A milestone literal mid-lex (only `%l` so far) is not yet accepting.
+        assert!(!accepts("|X.all()->filter(x|$x.d < %l"));
+    }
+
+    #[test]
+    fn direct_step_covers_the_saw_percent_and_milestone_branches() {
+        // `%` + lowercase opens the milestone lexeme; `%` + date char opens the
+        // numeric date lexeme; `%` + anything else dies.
+        assert!(matches!(
+            step(State::SawPercent, None, b'l'),
+            Step::Next(State::InMilestoneLit)
+        ));
+        assert!(matches!(
+            step(State::SawPercent, None, b'2'),
+            Step::Next(State::InDateLit)
+        ));
+        assert!(matches!(step(State::SawPercent, None, b'Z'), Step::Dead));
+        assert!(matches!(step(State::SawPercent, None, b')'), Step::Dead));
+        // The milestone lexeme accretes lowercase letters and delegates any other
+        // byte to `AfterValue` (value-terminal), so a following `)` pops a frame.
+        assert!(matches!(
+            step(State::InMilestoneLit, None, b'a'),
+            Step::Next(State::InMilestoneLit)
+        ));
+        assert!(matches!(
+            step(State::InMilestoneLit, Some(Frame::Paren), b')'),
+            Step::Pop(State::AfterValue)
+        ));
+        // A digit mid-literal delegates to `AfterValue`, where a bare digit dies.
+        assert!(matches!(
+            step(State::InMilestoneLit, None, b'1'),
+            Step::Dead
         ));
     }
 

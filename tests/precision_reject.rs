@@ -103,6 +103,27 @@ fn an_empty_date_literal_dies() {
     assert!(dies("|X.all()->filter(x|$x.d < %)"));
 }
 
+/// The symbolic milestoning literal (`%latest`/`%latestdate`, gap report G2) is a
+/// `%` followed by **lowercase letters only**. A bare `%`, an uppercase or digit
+/// first byte after `%`, or a digit/uppercase byte mid-literal all die — so the
+/// widening admits the milestone symbols without opening `%<anything>`.
+#[test]
+fn a_milestoning_literal_is_lowercase_letters_only() {
+    // Bare `%` still dies (shared with the date-literal pin above).
+    assert!(dies("|X.all()->take(%)"));
+    // Uppercase first byte after `%` is not a milestone symbol.
+    assert!(dies("|X.all()->take(%Latest)"));
+    // A digit or uppercase byte terminates the lowercase run, and the trailing
+    // byte has no legal continuation in an argument position.
+    assert!(dies("|X.all()->take(%latest1)"));
+    assert!(dies("|X.all()->take(%latestX)"));
+    // …but the real milestone literals stream (both source and operand position).
+    assert!(!dies("|X.all(%latest)->take(1)"));
+    assert!(!dies("|X.all(%latest, %latest)->take(1)"));
+    assert!(!dies("|X.all(%latestdate)->take(1)"));
+    assert!(!dies("|X.all()->filter(x|$x.d == %latest)"));
+}
+
 /// A lone `=` is not a comparison operator; only `==` compares, and a single `=`
 /// lives only in a block-query `let` binder (finding G).
 #[test]
