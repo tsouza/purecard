@@ -1074,29 +1074,41 @@ fn allowlist_sets(text: &str) -> Vec<Vec<String>> {
 
 /// Every `<N>/<N>` ratio appearing on a line that mentions "gold" — the
 /// `gold stays 5034/5034` soundness form, unambiguously the gold total.
+///
+/// Scans by `char`, not by byte index: a `gold`-mentioning line may also carry a
+/// multibyte char (a `§` section reference such as `§5/G2`) right beside a digit
+/// run, and byte-index arithmetic (`rfind(..).map(|i| i + 1)`) would land inside
+/// that char and panic. A ratio is a maximal digit/comma run, a `/`, then another
+/// digit/comma run; anything else (a `§5/G2` cross-reference, a `corpus/…` path)
+/// yields no digits on one side and is ignored.
 fn gold_ratio_citations(text: &str) -> Vec<usize> {
     let mut out = Vec::new();
     for line in text.lines() {
         if !line.to_ascii_lowercase().contains("gold") {
             continue;
         }
-        let bytes = line.as_bytes();
-        let mut from = 0;
-        while let Some(rel) = line[from..].find('/') {
-            let slash = from + rel;
-            from = slash + 1;
-            let left_start = line[..slash]
-                .rfind(|c: char| !(c.is_ascii_digit() || c == ','))
-                .map_or(0, |i| i + 1);
-            let right_end = slash
-                + 1
-                + line[slash + 1..]
-                    .find(|c: char| !(c.is_ascii_digit() || c == ','))
-                    .unwrap_or(bytes.len() - slash - 1);
-            if let (Some(l), Some(r)) = (
-                parse_grouped(&line[left_start..slash]),
-                parse_grouped(&line[slash + 1..right_end]),
-            ) {
+        let chars: Vec<char> = line.chars().collect();
+        let is_run = |c: char| c.is_ascii_digit() || c == ',';
+        for slash in 0..chars.len() {
+            if chars[slash] != '/' {
+                continue;
+            }
+            let mut left = slash;
+            while left > 0 && is_run(chars[left - 1]) {
+                left -= 1;
+            }
+            let mut right = slash + 1;
+            while right < chars.len() && is_run(chars[right]) {
+                right += 1;
+            }
+            // Both sides must carry at least one digit/comma char, else this `/`
+            // is a path or cross-reference, not a ratio.
+            if left == slash || right == slash + 1 {
+                continue;
+            }
+            let l: String = chars[left..slash].iter().collect();
+            let r: String = chars[slash + 1..right].iter().collect();
+            if let (Some(l), Some(r)) = (parse_grouped(&l), parse_grouped(&r)) {
                 out.push(l);
                 out.push(r);
             }
@@ -1218,6 +1230,25 @@ intro\n\n### 3.2 Crate layout\n\n```\npurecard/\n  vocab.rs   the vocab\n  sessi
         // A slash between non-numbers, or on a non-gold line, is ignored.
         assert!(gold_ratio_citations("see src/grammar for the gold path").is_empty());
         assert!(gold_ratio_citations("the ratio 12/12 on a plain line").is_empty());
+    }
+
+    #[test]
+    fn gold_ratio_citations_survives_multibyte_section_refs() {
+        // A `gold`-mentioning line carrying a `§N/…` section cross-reference (a
+        // multibyte `§` immediately before a digit-run/slash) must not panic on a
+        // char boundary, and the `§5/G2` is not a ratio (its right side is `G2`,
+        // no digits before it) — regression for the byte-index slicing bug.
+        assert!(
+            gold_ratio_citations(
+                "not in the gold corpus; oracle'd by the seed corpus (gap report §5/G2)."
+            )
+            .is_empty()
+        );
+        // A real ratio on the same kind of line is still read.
+        assert_eq!(
+            gold_ratio_citations("§8 gold soundness stays 5034/5034 (see §5.8)"),
+            [5034, 5034]
+        );
     }
 
     #[test]

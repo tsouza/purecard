@@ -51,8 +51,14 @@ pub enum Envelope {
 
 /// The marker substring of the arm-A relational envelope.
 const RELATIONAL_MARKER: &str = "tableReference";
-/// The marker substring of the arm-C class-navigation envelope.
-const CLASS_NAV_MARKER: &str = ".all()";
+/// The marker substring of the arm-C class-navigation envelope. The opening `.all(`
+/// (not the empty-arg `.all()`) so a *milestoned* source — `Class.all(%latest)` /
+/// `Class.all(%latest, %latest)` — still classifies as class-navigation. Arm-A is
+/// checked first, so an arm-A query that ever carried `.all(` cannot be
+/// mis-binned; over the committed Spider corpus every arm-C query contains `.all()`
+/// ⊇ `.all(`, so the tightening leaves all 4,639 / 395 gold classifications
+/// unchanged.
+const CLASS_NAV_MARKER: &str = ".all(";
 
 impl Envelope {
     /// Classify a query by its envelope marker.
@@ -94,5 +100,19 @@ mod tests {
     #[test]
     fn a_query_with_neither_marker_is_unclassified() {
         assert_eq!(Envelope::classify("|X->foo()"), None);
+    }
+
+    #[test]
+    fn a_milestoned_class_nav_source_still_classifies_as_arm_c() {
+        // A milestoned `.all(%latest)` / `.all(%latest, %latest)` source is
+        // class-navigation, not unclassified — the marker is the opening `.all(`.
+        assert_eq!(
+            Envelope::classify("|spider::geo::River.all(%latest)->take(1)"),
+            Some(Envelope::ClassNav)
+        );
+        assert_eq!(
+            Envelope::classify("|spider::geo::River.all(%latest, %latest)->take(1)"),
+            Some(Envelope::ClassNav)
+        );
     }
 }

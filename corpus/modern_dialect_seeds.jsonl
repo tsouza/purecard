@@ -1,0 +1,5 @@
+{"db_id":"modern","source_id":"gap-report/g2-latest:1","arm":"C","constructs":["milestoning","latest","source"],"pure_text":"|finos::trade::Trade.all(%latest)->project([x|$x.name], ['name'])"}
+{"db_id":"modern","source_id":"gap-report/g2-latest:2","arm":"C","constructs":["milestoning","latest","bitemporal","source"],"pure_text":"|finos::trade::Trade.all(%latest, %latest)->take(1)"}
+{"db_id":"modern","source_id":"gap-report/g2-latest:3","arm":"C","constructs":["milestoning","latest","property"],"pure_text":"|finos::trade::Trade.all()->filter(x|$x.facet(%latest, %latest).level == 'a')->take(1)"}
+{"db_id":"modern","source_id":"gap-report/g2-latest:4","arm":"C","constructs":["milestoning","latestdate","source"],"pure_text":"|finos::trade::Trade.all(%latestdate)->take(1)"}
+{"db_id":"modern","source_id":"gap-report/g2-latest:5","arm":"C","constructs":["milestoning","latest","operand"],"pure_text":"|finos::trade::Trade.all()->filter(x|$x.asOf == %latest)->take(1)"}

@@ -827,6 +827,28 @@ mod tests {
     }
 
     #[test]
+    fn a_milestoning_literal_is_an_l2_pass_through_operand() {
+        // `%latest` is a `Lexeme::Date`, so it carries no L2 narrowing: neither a
+        // bare source/argument position nor an *armed* comparison operand masks it
+        // (the tracker maps a `ReValue` opening for a whole-token literal to
+        // pass-through). `A.all(%latest)`-style milestoning therefore never risks
+        // masking the model's emitted milestone symbol.
+        let bare: &[&[u8]] = &[b"|", b"A", b".", b"all", b"(", b"%latest"];
+        let (tracker, pda) = run(bare);
+        assert_eq!(pda.state(), State::InMilestoneLit, "mid milestone literal");
+        assert_eq!(tracker.position(pda.state()), L2Position::None);
+
+        // Even after `$x.n ==` arms T1 (n is Integer), the `%latest` operand is
+        // pass-through, not a masked `ReValue` position.
+        let armed: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"$", b"x",
+            b".", b"n", b"==", b"%latest",
+        ];
+        let (tracker, pda) = run(armed);
+        assert_eq!(tracker.position(pda.state()), L2Position::None);
+    }
+
+    #[test]
     fn a_merged_closing_quote_records_the_true_column_bytes() {
         // H1: a string literal fused with its trailing `)` into one token
         // (`'ab')`) must still record the byte-exact content `ab` in the emitted

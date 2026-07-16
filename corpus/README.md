@@ -11,6 +11,12 @@ oracle backbone for PureCard. See [`../docs/spec/testing.md`](../docs/spec/testi
   **SOUNDNESS oracle**: replay each through the L1 decoder — any gold token the mask forbids is a
   grammar bug. Fully OFFLINE (no Legend engine needed). Also the empirical basis of the L1 grammar.
   Distilled from pure-lingua `data/phase2/{armA,armC}_*.jsonl` (accepted records; full dir 231MB → 4.8MB here).
+- `modern_dialect_seeds.jsonl` — seed gold for **modern Legend Pure** constructs the Spider-derived
+  pilot never exercised (the `%latest` milestoning literal; the `~` Relation/Function API / arm-R).
+  Same record shape, plus `arm: "R"` for the Relation/Function API. Distinct provenance (the
+  pure-research gap report, not the Spider pipeline), kept separate so `gold_queries.jsonl` and its
+  5,034-count citations stay frozen. **SOUNDNESS oracle**, replayed by `tests/modern_dialect_soundness.rs`.
+  See [ADR-0007](../docs/decisions/0007-modern-dialect-seed-corpus.md).
 - `schemas/*.md` — 8 database schema context files (autogen Pure classes + associations + exec
   coords) for 5 pilot + 3 out-of-sample dbs. **L2 (schema-consistency) test inputs.** Workspace ids
   inside are stale/ephemeral — only the class/property/association structure matters.
