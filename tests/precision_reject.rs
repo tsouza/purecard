@@ -124,6 +124,29 @@ fn a_milestoning_literal_is_lowercase_letters_only() {
     assert!(!dies("|X.all()->filter(x|$x.d == %latest)"));
 }
 
+/// The arm-R `~` sigil (gap report G1) must be followed by a column-set `~[`, a
+/// bare column reference `~ident`, or a quoted `~'…'`. A dangling `~`, a spaced
+/// `~ [`, a doubled `~~`, or a `~` in source position all die — the widening
+/// admits the Relation/Function API without opening a bare `~`.
+#[test]
+fn a_tilde_sigil_must_open_a_column_set_or_reference() {
+    assert!(dies("|X.all()->project(~)"));
+    assert!(dies("|X.all()->project(~ [Col: x|$x.a])"));
+    assert!(dies("|X.all()->project(~~[Col: x|$x.a])"));
+    assert!(dies("|X.all()->sort([ascending(~)])"));
+    // `~` is not a legal pipeline source.
+    assert!(dies("|~.all()->take(1)"));
+    // …but the real arm-R constructs stream (column-set, bare ref, quoted ref).
+    assert!(!dies("|X.all()->project(~[Col: x|$x.a])"));
+    assert!(!dies(
+        "|X.all()->groupBy(~[K], ~'Agg': x|$x.v : y|$y->sum())"
+    ));
+    assert!(!dies("|X.all()->sort([ascending(~A), descending(~B)])"));
+    assert!(!dies(
+        "|X.all()->project(~[N: x|$x.a])->extend(over(~N), ~[agg:{p,w,r|$r.v}:y|$y->sum()])"
+    ));
+}
+
 /// A lone `=` is not a comparison operator; only `==` compares, and a single `=`
 /// lives only in a block-query `let` binder (finding G).
 #[test]

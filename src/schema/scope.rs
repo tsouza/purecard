@@ -849,6 +849,45 @@ mod tests {
     }
 
     #[test]
+    fn an_arm_r_tilde_column_is_an_l2_pass_through() {
+        // A `~`-column reference (`~A`, `~[Col: …]`) opens at the `SawTilde` anchor,
+        // whose L2 rule is `None`: the synthetic relation-column name is never a
+        // schema Member/Source/Column position, so arm-R never risks masking it.
+        // A bare column ref inside `sort([ascending(~A)])`:
+        let sort_ref: &[&[u8]] = &[
+            b"|",
+            b"A",
+            b".",
+            b"all",
+            b"(",
+            b")",
+            b"->",
+            b"sort",
+            b"(",
+            b"[",
+            b"ascending",
+            b"(",
+            b"~",
+            b"A",
+        ];
+        let (tracker, pda) = run(sort_ref);
+        assert_eq!(pda.state(), State::InIdent, "mid `~A` column name");
+        assert_eq!(tracker.position(pda.state()), L2Position::None);
+
+        // The `~[` column-set opener and its `Col` name in `project(~[Col: …])`:
+        let project_set: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"project", b"(", b"~", b"[", b"Col",
+        ];
+        let (tracker, pda) = run(project_set);
+        assert_eq!(
+            pda.state(),
+            State::InIdent,
+            "mid `Col` relation column name"
+        );
+        assert_eq!(tracker.position(pda.state()), L2Position::None);
+    }
+
+    #[test]
     fn a_merged_closing_quote_records_the_true_column_bytes() {
         // H1: a string literal fused with its trailing `)` into one token
         // (`'ab')`) must still record the byte-exact content `ab` in the emitted

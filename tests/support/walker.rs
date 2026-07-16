@@ -18,10 +18,11 @@ use purecard::Pda;
 
 /// The representative byte alphabet the walk probes at each position. It is not
 /// all 256 bytes: one or two witnesses per character class (identifier, digit,
-/// each delimiter, each operator, string/date/var sigils) reach every arm of the
-/// transition function while keeping generated walks short and legible. Extra
-/// letters would only lengthen identifiers without exercising a new transition.
-const ALPHABET: &[u8] = b"abXY1_ |{}()[].,;:$%'-><=!&+*/";
+/// each delimiter, each operator, string/date/var sigils, the `~` relation sigil)
+/// reach every arm of the transition function while keeping generated walks short
+/// and legible. Extra letters would only lengthen identifiers without exercising a
+/// new transition.
+const ALPHABET: &[u8] = b"abXY1_ |{}()[].,;:$%'-><=!&+*/~";
 
 /// Number of accepting walks a full generation produces.
 pub const WALK_COUNT: usize = 64;

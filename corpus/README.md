@@ -12,12 +12,12 @@ oracle backbone for PureCard. See [`../docs/spec/testing.md`](../docs/spec/testi
   grammar bug. Fully OFFLINE (no Legend engine needed). Also the empirical basis of the L1 grammar.
   Distilled from pure-lingua `data/phase2/{armA,armC}_*.jsonl` (accepted records; full dir 231MB → 4.8MB here).
 - `modern_dialect_seeds.jsonl` — seed gold for **modern Legend Pure** constructs the Spider-derived
-  pilot never exercised. Currently holds the `%latest` milestoning seeds (gap report G2, `arm: "C"`);
-  the `~` Relation/Function API (arm-R, `arm: "R"`) is planned follow-on work that will extend this
-  file. Same record shape as `gold_queries.jsonl`. Distinct provenance (the pure-research gap report,
-  not the Spider pipeline), kept separate so `gold_queries.jsonl` and its 5,034-count citations stay
-  frozen. **SOUNDNESS oracle**, replayed by `tests/modern_dialect_soundness.rs`.
-  See [ADR-0007](../docs/decisions/0007-modern-dialect-seed-corpus.md).
+  pilot never exercised: the `%latest` milestoning seeds (gap report G2, `arm: "C"`) and the `~`
+  Relation/Function API (arm-R, `arm: "R"`, gap report G1). Same record shape as `gold_queries.jsonl`.
+  Distinct provenance (the pure-research gap report, not the Spider pipeline), kept separate so
+  `gold_queries.jsonl` and its 5,034-count citations stay frozen. **SOUNDNESS oracle**, replayed by
+  `tests/modern_dialect_soundness.rs`. See [ADR-0007](../docs/decisions/0007-modern-dialect-seed-corpus.md)
+  and [ADR-0008](../docs/decisions/0008-arm-r-relation-function-api.md).
 - `schemas/*.md` — 8 database schema context files (autogen Pure classes + associations + exec
   coords) for 5 pilot + 3 out-of-sample dbs. **L2 (schema-consistency) test inputs.** Workspace ids
   inside are stale/ephemeral — only the class/property/association structure matters.

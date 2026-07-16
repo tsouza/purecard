@@ -4,7 +4,7 @@ _[Spec index](README.md) · [domain model](../domain-model.md)_
 
 ## 5. L1 — the emitted-Pure grammar (syntactic constraint level)
 
-L1 is the context-free grammar of the *emitted subset* of Legend Pure that the trained model actually produces. The corpus exercises **two idioms** the grammar must both admit: an **arm-A relational envelope** (`|Db->tableReference(...)->tableToTDS()->…`, the TDS/table-function pipeline, 92.2% of gold) and an **arm-C class-navigation** form (`|Class.all()->…`, class-anchored relation pipelines, 7.8%). Both are single Pure lambdas; they diverge only at the `source` production and in a handful of relational leaf steps. L1 makes the output *parse*; L2 (§6) makes the identifiers/types *resolve against a model*; L3 (faithfulness) is out of scope for both. The both-arms scope is recorded in ADR-0004.
+L1 is the context-free grammar of the *emitted subset* of Legend Pure that the trained model actually produces. The corpus exercises **two idioms** the grammar must both admit: an **arm-A relational envelope** (`|Db->tableReference(...)->tableToTDS()->…`, the TDS/table-function pipeline, 92.2% of gold) and an **arm-C class-navigation** form (`|Class.all()->…`, class-anchored relation pipelines, 7.8%). Both are single Pure lambdas; they diverge only at the `source` production and in a handful of relational leaf steps. L1 makes the output *parse*; L2 (§6) makes the identifiers/types *resolve against a model*; L3 (faithfulness) is out of scope for both. The both-arms scope is recorded in ADR-0004. A third construct family — **arm-R**, the modern Relation/Function API (`~`-column constructs) the fine-tuned model also emits — is additive, oracle'd by a separate seed corpus, and specified in §5.9 (ADR-0007, ADR-0008).
 
 **Core principle (oracle-driven).** Every production below is derived from, and testable against, the execution-verified gold Pure queries the upstream pipeline already produced (see §8 for corpus locations). The verified corpus **is** the spec: a grammar that masks a token appearing in a gold query is a soundness bug. Do **not** invent productions the corpus does not exercise, and do **not** omit ones it does. The construct inventory in §5.7 is the empirical evidence — counts over the full **5,034-query** corpus (`corpus/gold_queries.jsonl`: 4,639 arm-A + 395 arm-C), one per query containing the construct.
 
@@ -250,6 +250,60 @@ each seed through the real byte-PDA with the same killer property as §8.1 (neve
 dead, ends accepting) and classifies it to its declared envelope. The seed corpus
 is the oracle for anything added here — do **not** add a production without a seed.
 
-| Construct                             | Seeds | Grammar production    | Gap report |
-| ------------------------------------- | ----: | --------------------- | ---------- |
-| `%latest` / `%latestdate` milestoning | 5     | `milestoneLit` (§5.4) | G2         |
+| Construct                             | Seeds | Grammar production       | Gap report |
+| ------------------------------------- | ----: | ------------------------ | ---------- |
+| `%latest` / `%latestdate` milestoning | 5     | `milestoneLit` (§5.4)    | G2         |
+| `~` Relation/Function API (arm-R)     | 11    | arm-R productions (§5.9) | G1         |
+
+### 5.9 Arm-R — the Relation/Function API (`~`-column constructs)
+
+Modern Legend Pure's Relation/Function API
+(`meta::pure::functions::relation::*`) is a third construct family, **arm-R**,
+distinguished by the `~` column sigil. It is class-nav-sourced in the seed corpus
+(`Class.all()->project(~[…])`), so `Envelope::classify` bins any `~`-bearing query
+as `RelationApi` (the `~` is checked before the `.all(` / `tableReference`
+markers). These productions are **additive** — they widen the grammar and never
+touch arm-A/arm-C — and are oracle'd by the arm-R seeds in
+`corpus/modern_dialect_seeds.jsonl` (§5.8), not the frozen Spider gold. Every
+referenced sub-production (`colLambda`, `mapLambda`, `reduceLambda`, `binderVar`,
+`valueExpr`, `strlit`, `reducer`) already exists in §5.3.
+
+```ebnf
+(* --- add to the step alternation (§5.2) --- *)
+step =+ relProject | relFnGroupBy | relSort | relExtendWindow | relRename ;
+
+relProject      = "project" "(" "~" "[" relColSpec { "," relColSpec } "]" ")" ;
+relColSpec      = colName ":" colLambda ;                       (* Week: x|$x.a *)
+
+relFnGroupBy    = "groupBy" "(" "~" "[" [ colName { "," colName } ] "]"   (* keys; MAY be ~[] *)
+                            "," relAggSpec { "," relAggSpec } ")" ;
+relAggSpec      = "~" colName ":" mapLambda ":" reduceLambda ;  (* ~'Gross Credits': x|$x.GC : y|$y->sum() *)
+
+relSort         = "sort" "(" "[" relSortKey { "," relSortKey } "]" ")" ;
+relSortKey      = ( "ascending" | "descending" ) "(" colRef ")" ;
+
+relExtendWindow = "extend" "(" windowSpec "," "~" "[" winAggSpec { "," winAggSpec } "]" ")" ;
+windowSpec      = "over" "(" colRef { "," colRef } ")" ;        (* over(~desk) — window partition *)
+winAggSpec      = colName ":" frameLambda ":" reduceLambda ;    (* agg: {p,w,r|$r.notional} : y|$y->sum() *)
+frameLambda     = "{" binderVar { "," binderVar } "|" valueExpr "}" ;  (* window frame, ≥1 binder *)
+
+relRename       = "rename" "(" colRef "," colRef ")" ;          (* rename(~old, ~new) *)
+
+(* --- new shared lexis --- *)
+colRef          = "~" colName ;                                 (* ~Week / ~'Gross Credits' *)
+colName         = ident | strlit ;                             (* bare ident OR single-quoted (spaces allowed) *)
+```
+
+**How the byte-PDA admits it (the residual over-approximation, §5.6).** The
+machine adds exactly one state, `SawTilde` (reached from the value hubs on `~`),
+transitioning on `[` (a relation column-set), a bare identifier, or a quoted
+string (a column reference); a `:` may additionally open a `{`-brace frame lambda
+(`agg:{p,w,r|…}`). Everything else in arm-R — the `:` column-to-lambda separators,
+the `over(~…)` partition, the `{p,w,r|…}` frames, the reducers, the bracket
+nesting — reuses the shared value-hub / lambda / bracket machinery of §5.2–§5.3.
+So the grammar admits a superset of the strict productions above (e.g. it does not
+enforce that a `winAggSpec` colon is bare while a `relAggSpec` colon carries a
+leading `~`); the compiler oracle catches the residue, exactly as §5.6 sanctions.
+Like every other L1 identifier, a `~`-column name is an **L2 pass-through** (it
+opens at the `SawTilde` anchor, whose rule is `None`), so arm-R never masks the
+model's emitted column names.

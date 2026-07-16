@@ -89,8 +89,16 @@ fn every_gold_query_streams_soundly_through_the_real_pda() {
         match Envelope::classify(&record.pure_text) {
             Some(Envelope::Relational) => arm_a += 1,
             Some(Envelope::ClassNav) => arm_c += 1,
+            // The Spider gold corpus predates the modern Relation/Function API; no
+            // gold here carries a `~`, so an arm-R classification means a `~` leaked
+            // into `gold_queries.jsonl` (arm-R seeds live in the separate
+            // modern-dialect corpus, ADR-0007).
+            Some(Envelope::RelationApi) => panic!(
+                "gold query {} unexpectedly classified as arm-R (contains `~`): {}",
+                record.source_id, record.pure_text
+            ),
             None => panic!(
-                "gold query {} matches neither envelope marker: {}",
+                "gold query {} matches no envelope marker: {}",
                 record.source_id, record.pure_text
             ),
         }
