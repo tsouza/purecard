@@ -3,9 +3,8 @@
 //! [`pda`] holds the live automaton — the [`State`](pda::State) /
 //! [`Frame`](pda::Frame) machine and its pure [`step`](pda::step) function. This
 //! module adds the two things the automaton itself does not carry: the
-//! [`Envelope`] classifier that names which of the two corpus idioms a query
-//! belongs to, and the [`DeadState`] carrier the [`Pda`](pda::Pda) hands back on
-//! rejection.
+//! [`Envelope`] classifier that names which corpus idiom a query belongs to, and
+//! the [`DeadState`] carrier the [`Pda`](pda::Pda) hands back on rejection.
 //!
 //! The emitted-Pure grammar (§5) is fixed: the recogniser plus the
 //! [`CompiledGrammar`] vocabulary/mask cache (`docs/spec/architecture.md` §4),
@@ -33,20 +32,26 @@ pub struct DeadState {
     pub stack_top: &'static str,
 }
 
-/// Which of the two observed corpus idioms a query uses (§5.1).
+/// Which observed corpus idiom a query uses (§5.1).
 ///
-/// The two envelopes are mechanically distinguishable and non-overlapping in the
-/// gold corpus: an arm-A query is the relational `tableReference(…)->tableToTDS()`
-/// pipeline, an arm-C query is the class-navigation `Class.all()->…` form. The
-/// soundness gate partitions the corpus by this classifier and asserts an exact
-/// record count per arm (`specs/m1-l1-grammar.md`, G2), so a mis-partitioned or
-/// missing query reddens the gate.
+/// The envelopes are mechanically distinguishable and non-overlapping: an arm-A
+/// query is the relational `tableReference(…)->tableToTDS()` pipeline, an arm-C
+/// query is the class-navigation `Class.all()->…` form, and an arm-R query uses
+/// the modern Relation/Function API (any `~`-column construct — `project(~[…])`,
+/// `groupBy(~[…])`, `over(~…)`, …). The soundness gate partitions each corpus by
+/// this classifier and asserts an exact record count per arm
+/// (`specs/m1-l1-grammar.md`, G2; ADR-0007), so a mis-partitioned or missing query
+/// reddens the gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Envelope {
     /// Arm A — the relational TDS envelope (`…->tableReference(…)->tableToTDS()`).
     Relational,
     /// Arm C — the class-navigation envelope (`…Class.all()->…`).
     ClassNav,
+    /// Arm R — the modern Relation/Function API (any `~`-column construct). Seeded
+    /// in `corpus/modern_dialect_seeds.jsonl` (ADR-0007); absent from the Spider
+    /// gold corpus.
+    RelationApi,
 }
 
 /// The marker substring of the arm-A relational envelope.
@@ -59,20 +64,28 @@ const RELATIONAL_MARKER: &str = "tableReference";
 /// ⊇ `.all(`, so the tightening leaves all 4,639 / 395 gold classifications
 /// unchanged.
 const CLASS_NAV_MARKER: &str = ".all(";
+/// The marker of the arm-R Relation/Function API envelope: the `~` column sigil.
+/// Checked **first**, because an arm-R query is class-nav-sourced (`Class.all()->
+/// project(~[…])`) and so also carries `.all(`; the `~` is the discriminator. No
+/// Spider gold contains `~`, so this leaves all arm-A / arm-C classifications
+/// unchanged and only re-bins the `~`-bearing modern-dialect seeds.
+const RELATION_API_MARKER: &str = "~";
 
 impl Envelope {
     /// Classify a query by its envelope marker.
     ///
-    /// Returns [`Relational`](Envelope::Relational) if the query contains the
-    /// `tableReference` marker, [`ClassNav`](Envelope::ClassNav) if it contains
-    /// the `.all(` marker (the opening paren, so a milestoned `.all(%latest)`
-    /// source still classifies as class-navigation), and `None` if neither (which,
-    /// over the all-gold corpus, cannot happen and so fails the soundness gate's
-    /// per-arm tally). The two markers are mutually exclusive across the corpus, so
-    /// the order of the checks does not change any gold classification.
+    /// Returns [`RelationApi`](Envelope::RelationApi) for any `~`-column construct,
+    /// else [`Relational`](Envelope::Relational) for the `tableReference` marker,
+    /// else [`ClassNav`](Envelope::ClassNav) for the `.all(` marker (the opening
+    /// paren, so a milestoned `.all(%latest)` source still classifies as
+    /// class-navigation), else `None`. The `~` check is first because an arm-R query
+    /// is class-nav-sourced and thus also matches `.all(`; over the Spider gold
+    /// corpus (no `~`) the order is immaterial and every classification is unchanged.
     #[must_use]
     pub fn classify(query: &str) -> Option<Envelope> {
-        if query.contains(RELATIONAL_MARKER) {
+        if query.contains(RELATION_API_MARKER) {
+            Some(Envelope::RelationApi)
+        } else if query.contains(RELATIONAL_MARKER) {
             Some(Envelope::Relational)
         } else if query.contains(CLASS_NAV_MARKER) {
             Some(Envelope::ClassNav)
@@ -100,6 +113,18 @@ mod tests {
 
     #[test]
     fn a_query_with_neither_marker_is_unclassified() {
+        assert_eq!(Envelope::classify("|X->foo()"), None);
+    }
+
+    #[test]
+    fn a_relation_api_query_classifies_as_arm_r() {
+        // Any `~`-column construct is arm-R, even though the query is class-nav
+        // sourced (it also contains `.all(`) — the `~` is checked first.
+        assert_eq!(
+            Envelope::classify("|X.all()->project(~[Col: x|$x.a])"),
+            Some(Envelope::RelationApi)
+        );
+        // A query with neither `~` nor a relational/class marker is still None.
         assert_eq!(Envelope::classify("|X->foo()"), None);
     }
 

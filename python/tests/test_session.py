@@ -138,3 +138,33 @@ def test_a_latest_milestoning_query_streams_end_to_end():
     # `eos_id` field — and EOS is then acceptable.
     assert _bit_set(session.allowed_mask(), len(LATEST_VOCAB))
     session.accept_token(len(LATEST_VOCAB))
+
+
+# A whole-token vocabulary spelling an arm-R Relation/Function API query
+# (`|X.all()->project(~[Col: x|$x.a])`, gap report G1): source, the `project(~[`
+# relation column-set open, a column lambda, the close, and the empty token.
+ARM_R_VOCAB = [
+    b"|X.all()",
+    b"->project(~[",
+    b"Col: x|$x.a",
+    b"])",
+    b"",
+]
+ARM_R_EOS_ID = 4
+ARM_R_GOLD = [0, 1, 2, 3]
+
+
+def test_an_arm_r_relation_api_query_streams_end_to_end():
+    """An arm-R `project(~[…])` relation query marshals through the PyO3 boundary
+    end to end — the `~` column-set sigil and its column lambda are admissible at
+    each step and the stream completes (gap report G1)."""
+    grammar = purecard.compile_grammar("", ARM_R_VOCAB, ARM_R_EOS_ID)
+    session = purecard.Session(grammar)
+    assert not session.is_complete()
+    for token_id in ARM_R_GOLD:
+        mask = session.allowed_mask()
+        assert _bit_set(mask, token_id), f"gold token {token_id} must be admissible"
+        session.accept_token(token_id)
+    assert session.is_complete()
+    assert _bit_set(session.allowed_mask(), len(ARM_R_VOCAB))
+    session.accept_token(len(ARM_R_VOCAB))

@@ -181,6 +181,11 @@ pub enum State {
     SawLt,
     /// Just consumed `&`; a second `&` must follow to complete `&&`.
     SawAmp,
+    /// Just consumed `~`: the Relation/Function API sigil (arm-R). A `[` opens a
+    /// relation column-set (`project(~[…])`), and a bare identifier or a
+    /// single-quoted string is a column reference (`~Week` / `~'Gross Credits'`).
+    /// Nothing else — including whitespace — may follow, so `~ )` and `~~` die.
+    SawTilde,
 }
 
 impl State {
@@ -235,6 +240,7 @@ impl State {
             State::SawGt => "SawGt",
             State::SawLt => "SawLt",
             State::SawAmp => "SawAmp",
+            State::SawTilde => "SawTilde",
         }
     }
 
@@ -293,13 +299,14 @@ impl State {
             State::SawLt => 40,
             State::SawAmp => 41,
             State::InMilestoneLit => 42,
+            State::SawTilde => 43,
         }
     }
 
     /// The number of distinct automaton states — the length a per-state cache
     /// (`Vec<_>` keyed by [`index`](State::index)) must have. One more than the
     /// largest [`index`](State::index).
-    pub const COUNT: usize = 43;
+    pub const COUNT: usize = 44;
 
     /// The lexeme class this state is *inside*, if any (`None` = an inter-lexeme
     /// or structural position).
@@ -477,6 +484,9 @@ fn value_position(stack_top: Option<Frame>, byte: u8, allow_close: bool) -> Step
         b'\'' => Step::Next(State::InStrLit { escaped: false }),
         b'%' => Step::Next(State::SawPercent),
         b'$' => Step::Next(State::AfterDollar),
+        // A `~` is the Relation/Function API sigil (arm-R): a relation column-set
+        // `~[…]` or a column reference `~Week` / `~'Gross Credits'`.
+        b'~' => Step::Next(State::SawTilde),
         b'(' => Step::Push(Frame::Paren, State::ExpectValue),
         b'[' => Step::Push(Frame::Bracket, State::ExpectValue),
         // A `{` in value position opens a `join` brace lambda; it must begin with a
@@ -835,14 +845,20 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
             b if is_ws(b) => Step::Next(State::AfterColonWs),
             b':' => Step::Next(State::AfterColon2),
             b if is_ident_start(b) => Step::Next(State::InIdent),
+            // An arm-R relation aggregate binds a column name to a lambda after a
+            // `:` (`colName : {p,w,r|…}` window frame, `~[agg:{…}:…]`); the `{`
+            // opens a brace lambda exactly as it does in value position.
+            b'{' => Step::Push(Frame::BraceLambda, State::ExpectBraceBinder),
             _ => Step::Dead,
         },
 
-        // A single `:` followed by whitespace: a typed-binder colon only (`row: …`).
-        // A second `:` here would be a non-contiguous `::`, which is a dead state.
+        // A single `:` followed by whitespace: a typed-binder colon (`row: …`) or an
+        // arm-R aggregate lambda (`agg: {p,w,r|…}`). A second `:` here would be a
+        // non-contiguous `::`, which is a dead state.
         State::AfterColonWs => match byte {
             b if is_ws(b) => Step::Next(State::AfterColonWs),
             b if is_ident_start(b) => Step::Next(State::InIdent),
+            b'{' => Step::Push(Frame::BraceLambda, State::ExpectBraceBinder),
             _ => Step::Dead,
         },
 
@@ -928,6 +944,20 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
                 Step::Dead
             }
         }
+
+        // A `~` (arm-R sigil) is followed by a `[` (a relation column-set
+        // `~[…]`), a bare identifier, or a single-quoted string (a column
+        // reference `~Week` / `~'Gross Credits'`). Nothing else — not whitespace,
+        // not a closer — may follow, so `~ )` and `~~` are dead states. The rest of
+        // arm-R (the `:` column-to-lambda separators, the `over(~…)`/`{p,w,r|…}`
+        // window frames, the reducers) reuses the shared value-hub/lambda/bracket
+        // machinery once this sigil is admitted.
+        State::SawTilde => match byte {
+            b'[' => Step::Push(Frame::Bracket, State::ExpectValue),
+            b'\'' => Step::Next(State::InStrLit { escaped: false }),
+            b if is_ident_start(b) => Step::Next(State::InIdent),
+            _ => Step::Dead,
+        },
     }
 }
 
@@ -1213,6 +1243,7 @@ mod tests {
         State::SawGt,
         State::SawLt,
         State::SawAmp,
+        State::SawTilde,
     ];
 
     #[test]
@@ -1290,6 +1321,7 @@ mod tests {
             State::AfterArrow,
             State::AfterColon,
             State::SawDash,
+            State::SawTilde,
         ] {
             assert_eq!(
                 state.lexeme_kind(),
@@ -1832,6 +1864,84 @@ mod tests {
         assert!(matches!(
             step(State::InMilestoneLit, None, b'1'),
             Step::Dead
+        ));
+    }
+
+    #[test]
+    fn arm_r_relation_api_accepts() {
+        // The Relation/Function API family (gap report G1) — every seed from §4.1.
+        assert!(accepts("|X.all()->project(~[Col: x|$x.a])"));
+        assert!(accepts("|X.all()->project(~[A: x|$x.a, B: x|$x.b.c])"));
+        assert!(accepts(
+            "|X.all()->groupBy(~[K], ~'Agg': x|$x.v : y|$y->sum())"
+        ));
+        // Empty relation key `~[]` (aggregate-over-all), mirroring empty `[]`.
+        assert!(accepts(
+            "|X.all()->groupBy(~[], ~'Total': x|$x.v : y|$y->count())"
+        ));
+        assert!(accepts("|X.all()->sort([ascending(~A)])"));
+        assert!(accepts("|X.all()->sort([ascending(~A), descending(~B)])"));
+        assert!(accepts("|X.all()->rename(~old, ~new)"));
+        // Window extend: `over(~…)` partition and a `{p,w,r|…}` frame lambda after a
+        // spaced `agg: {…}` colon.
+        assert!(accepts(
+            "|X.all()->project(~[N: x|$x.a])->extend(over(~N), ~[agg: {p,w,r|$r.v} : y|$y->sum()])"
+        ));
+        // …and the un-spaced `agg:{…}:y` colon form (a `{`/`y` right after `:`).
+        assert!(accepts(
+            "|X.all()->project(~[N: x|$x.a])->extend(over(~N), ~[agg:{p,w,r|$r.v}:y|$y->sum()])"
+        ));
+        // A full chain: project → grouped agg → sort, all arm-R.
+        assert!(accepts(
+            "|X.all()->project(~[W: x|$x.a])->groupBy(~[W], ~'S': x|$x.g : y|$y->sum())->sort([ascending(~W)])"
+        ));
+        // A quoted column name with spaces (`~'Gross Credits'`).
+        assert!(accepts(
+            "|X.all()->groupBy(~[Week], ~'Gross Credits': x|$x.g : y|$y->sum())"
+        ));
+    }
+
+    #[test]
+    fn a_tilde_sigil_must_be_followed_by_a_column_set_or_reference() {
+        // `~` opens `~[`, `~ident`, or `~'str'`; nothing else — not whitespace, not
+        // a closer, not another `~` — may follow.
+        assert!(dies("|X.all()->project(~)"));
+        assert!(dies("|X.all()->project(~ [Col: x|$x.a])"));
+        assert!(dies("|X.all()->project(~~)"));
+        assert!(dies("|X.all()->sort([ascending(~)])"));
+        // A `~` is not a legal pipeline source.
+        assert!(dies("|~.all()"));
+    }
+
+    #[test]
+    fn direct_step_covers_the_saw_tilde_branch() {
+        assert!(matches!(
+            step(State::SawTilde, None, b'['),
+            Step::Push(Frame::Bracket, State::ExpectValue)
+        ));
+        assert!(matches!(
+            step(State::SawTilde, None, b'\''),
+            Step::Next(State::InStrLit { escaped: false })
+        ));
+        assert!(matches!(
+            step(State::SawTilde, None, b'W'),
+            Step::Next(State::InIdent)
+        ));
+        assert!(matches!(step(State::SawTilde, None, b' '), Step::Dead));
+        assert!(matches!(step(State::SawTilde, None, b')'), Step::Dead));
+        // A `~` in value position opens the sigil state.
+        assert!(matches!(
+            step(State::ExpectValue, Some(Frame::Paren), b'~'),
+            Step::Next(State::SawTilde)
+        ));
+        // A `{` after a typed/relation colon opens a brace lambda.
+        assert!(matches!(
+            step(State::AfterColon, Some(Frame::Bracket), b'{'),
+            Step::Push(Frame::BraceLambda, State::ExpectBraceBinder)
+        ));
+        assert!(matches!(
+            step(State::AfterColonWs, Some(Frame::Bracket), b'{'),
+            Step::Push(Frame::BraceLambda, State::ExpectBraceBinder)
         ));
     }
 
