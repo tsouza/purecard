@@ -2,7 +2,7 @@
 
 - **Status:** Draft (ready to implement)
 - **Created:** 2026-07-11
-- **Owner:** PureCard decoder engineer
+- **Owner:** PureCARD decoder engineer
 
 ## Problem
 

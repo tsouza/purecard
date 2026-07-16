@@ -6,14 +6,14 @@
 
 ## Problem
 
-PureCard is the Rust half of a Rust/Python split. The decoder core (M0–M3) is a pure library. Python must drive the decoder inside its per-token sampling loop, and there is no Python-facing surface yet. M4 exposes it via a **thin** PyO3 binding — marshaling only, no decode logic — packaged as a maturin `abi3` wheel. The FFI crux: `DecoderSession<'g>` borrows a `CompiledGrammar` (`src/session.rs:39`, the *only* borrowed field), and a Python object cannot hold a Rust lifetime. The pure core, default build, and `check-core-deplight` must stay untouched behind a non-default `python` feature.
+PureCARD is the Rust half of a Rust/Python split. The decoder core (M0–M3) is a pure library. Python must drive the decoder inside its per-token sampling loop, and there is no Python-facing surface yet. M4 exposes it via a **thin** PyO3 binding — marshaling only, no decode logic — packaged as a maturin `abi3` wheel. The FFI crux: `DecoderSession<'g>` borrows a `CompiledGrammar` (`src/session.rs:39`, the *only* borrowed field), and a Python object cannot hold a Rust lifetime. The pure core, default build, and `check-core-deplight` must stay untouched behind a non-default `python` feature.
 
 ## Decisions (adjudicated)
 
 - **Ownership:** kill the lifetime with a `Borrow` type param on the core session (`DecoderSession<G = &'static CompiledGrammar>`), so the pyclass owns an `Arc<CompiledGrammar>` and a fully-`'static` session. **No `self_cell`/`ouroboros`, no `unsafe` in our tree, one fewer vetted dep.** `std` gives `Borrow<T> for &T` and `Arc<T>: Borrow<T>`, and the default type param keeps every M0–M3 `new(&g)` caller source-compatible.
 - **Mask marshaling:** packed little-endian `PyBytes` via a new pure `BitMask::pack_le_bytes_into(&mut Vec<u8>)` (reused buffer, no per-step alloc). **Reject the numpy crate** — ~19 KB is negligible, numpy is heavy/pyo3-coupled and thickens the binding.
 - **forbid(unsafe_code):** kept crate-wide, proven by a `cargo check --features python` gate; sibling-crate `#[allow]` is a pre-designed fallback only.
-- **Errors:** `create_exception!(purecard, PureCardError, PyValueError)` + `impl From<DecodeError/SchemaError> for PyErr` carrying `Display`.
+- **Errors:** `create_exception!(purecard, PureCARDError, PyValueError)` + `impl From<DecodeError/SchemaError> for PyErr` carrying `Display`.
 
 ## Ground-truth corrections baked in
 

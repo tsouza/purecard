@@ -8,7 +8,7 @@ without special handling.
 
 This is the authoritative statement of how each factor is realized and enforced.
 It is domain-agnostic: it names the *shape* each factor takes here, not any
-particular application's realization. **PureCard — the decoder this kit currently
+particular application's realization. **PureCARD — the decoder this kit currently
 builds — is a pure library plus a feature-gated PyO3 boundary: no network service,
 no process to bind or drain, no backing store.** It therefore realizes only the
 subset of the twelve factors a *library* can: **I** (codebase), **II**
@@ -18,7 +18,7 @@ maturin-wheel pipeline whose first release is still held. The server-only factor
 backing services, processes, port binding, concurrency, disposability/shutdown,
 and container-backed dev/prod parity — are **not implemented for a library**;
 the table marks their enforcement **Future**, naming the shape each will take when
-this kit grows a server, not a guarantee PureCard provides today. Config (III) is
+this kit grows a server, not a guarantee PureCARD provides today. Config (III) is
 likewise a pattern that activates the moment the library grows its first env
 setting. The table grows through reviewer-approved PRs like the rest of the
 ledger — as an application gains a config surface, backing services, and a

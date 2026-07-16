@@ -1,4 +1,4 @@
-# 0002. PureCard is a single constrained-decoder library, not a layered server
+# 0002. PureCARD is a single constrained-decoder library, not a layered server
 
 - **Status:** Accepted
 - **Date:** 2026-07-10
@@ -13,7 +13,7 @@ methodology (deterministic gates, spec-driven loop, a reviewer agent, an oracle
 mindset).
 
 The actual project, specified in full in [the spec](../spec/README.md), is
-**PureCard**: a grammar- and schema-constrained decoder for Legend Pure that masks
+**PureCARD**: a grammar- and schema-constrained decoder for Legend Pure that masks
 a language model's logits so generated queries are valid by construction. It is a
 single library crate exposing a thin PyO3 boundary — the Rust half of a Rust/Python
 split. It has no server, no transport, no request/response layering. The scaffold
@@ -60,6 +60,6 @@ and public-api → until a published baseline exists; fuzz/bench → their miles
   set `SEMVER_ENABLED` after the first crates.io release, `PUBLIC_API_ENABLED`
   after committing a baseline, add the PyO3 `python` feature + a maturin/PyPI lane
   at M4, and restore fuzz/bench when there is code to exercise.
-- **Revisit if:** PureCard grows a second published crate (re-introduce a real
+- **Revisit if:** PureCARD grows a second published crate (re-introduce a real
   multi-member workspace) or a genuine service front-end (a separate binary crate,
   not a return to layering inside the library).

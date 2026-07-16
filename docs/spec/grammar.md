@@ -1,4 +1,4 @@
-# PureCard Spec — L1 Grammar
+# PureCARD Spec — L1 Grammar
 
 _[Spec index](README.md) · [domain model](../domain-model.md)_
 
@@ -10,7 +10,7 @@ L1 is the context-free grammar of the *emitted subset* of Legend Pure that the t
 
 ### 5.1 Query envelope (two observed top-level forms)
 
-The final-query span PureCard constrains is a Pure lambda. Two envelopes occur in the corpus:
+The final-query span PureCARD constrains is a Pure lambda. Two envelopes occur in the corpus:
 
 ```ebnf
 query        = simpleQuery | blockQuery ;

@@ -1,6 +1,6 @@
 # Domain Model
 
-The evolving statement of **what PureCard is and does**. It is the elaboration of
+The evolving statement of **what PureCARD is and does**. It is the elaboration of
 the domain section of [`../constitution.md`](../constitution.md): the constitution
 states the non-negotiable domain *rules*; this file describes the *entities,
 workflows, and invariants* those rules govern. When the two disagree, the
@@ -28,7 +28,7 @@ one reviewer-approved PR at a time.
 ### GuaranteeLevel
 
 **What it is.** The three nested guarantees a constrained decoder can offer:
-`Syntactic` (L1), `SchemaConsistent` (L2), and `Faithful` (L3). PureCard enforces
+`Syntactic` (L1), `SchemaConsistent` (L2), and `Faithful` (L3). PureCARD enforces
 up to L2 and refuses L3. Implemented in `src/lib.rs`.
 
 **Invariants.** The levels form a strict containment hierarchy —
@@ -185,5 +185,5 @@ trajectory. [`spec/architecture.md`](spec/architecture.md) §3.3, §4.3, §9.3.
 - **Soundness / completeness** — never mask a valid continuation / never lead the
   model into a dead end. Both are mechanically testable against the corpus and the
   engine oracle.
-- **Faithfulness** — the query means what was asked. Out of scope; PureCard never
+- **Faithfulness** — the query means what was asked. Out of scope; PureCARD never
   claims it.

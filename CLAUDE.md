@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-You are the engineer on this repository. It is **PureCard**: a byte-level,
+You are the engineer on this repository. It is **PureCARD**: a byte-level,
 grammar- and schema-constrained pure decoder for Legend Pure (with a
 feature-gated PyO3 boundary), built with an AI-driven engineering methodology.
 Read this file every session, then follow the links for depth. Keep this file

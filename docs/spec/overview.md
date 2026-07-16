@@ -1,4 +1,4 @@
-# PureCard Spec — Overview
+# PureCARD Spec — Overview
 
 _[Spec index](README.md) · [domain model](../domain-model.md)_
 
@@ -7,7 +7,7 @@ This file covers the interface and guarantee boundary (§1), scope and non-goals
 (Appendix B). The grammar, schema, architecture, and testing rules live in the
 other [`docs/spec/`](README.md) files — see the [index](README.md) to route.
 
-## 1. What PureCard is — the interface and the guarantee boundary
+## 1. What PureCARD is — the interface and the guarantee boundary
 
 ### 1.1 What PICARD is (background the reader will not have)
 
@@ -27,11 +27,11 @@ PICARD defines **three tiers** of checking, applied incrementally as text is gen
 2. **Grammatical (syntactic)** — the partial output parses as the target grammar. _Schema-independent._
 3. **Schema-consistency** — the identifiers and types resolve against _this specific database's_ schema: no phantom tables/columns, no type mismatches. _Per-database, context-sensitive._
 
-A hard problem PICARD solves is **BPE↔target-token misalignment**: the language model's subword (BPE) tokens do not align with the target language's lexical tokens — a single BPE token can straddle a keyword boundary, and a target keyword can span several BPE tokens. PICARD handles this by **incremental parsing**: it feeds generated text through the parser piece by piece and checks reachability of a valid parse. PureCard solves the same problem more simply, at the **byte level** (§4.4): it treats every model token as an opaque raw byte string and asks only whether feeding those bytes advances a byte-level automaton to a non-dead state, which sidesteps subword-boundary alignment entirely.
+A hard problem PICARD solves is **BPE↔target-token misalignment**: the language model's subword (BPE) tokens do not align with the target language's lexical tokens — a single BPE token can straddle a keyword boundary, and a target keyword can span several BPE tokens. PICARD handles this by **incremental parsing**: it feeds generated text through the parser piece by piece and checks reachability of a valid parse. PureCARD solves the same problem more simply, at the **byte level** (§4.4): it treats every model token as an opaque raw byte string and asks only whether feeding those bytes advances a byte-level automaton to a non-dead state, which sidesteps subword-boundary alignment entirely.
 
-### 1.2 PureCard, mechanically
+### 1.2 PureCARD, mechanically
 
-PureCard is a **logits mask generator** driven by an incremental recognizer for a restricted subset of **Legend Pure** (the functional query/modeling language of the FINOS Legend platform). At every decode step the model proposes a distribution over its vocabulary (~150k tokens); PureCard, given the tokens generated so far, returns a boolean bitmask over the vocabulary marking the tokens that keep the partial output on a path to a valid Pure query. The Python inference loop applies the mask (sets disallowed logits to −∞) before sampling. Output is valid by construction.
+PureCARD is a **logits mask generator** driven by an incremental recognizer for a restricted subset of **Legend Pure** (the functional query/modeling language of the FINOS Legend platform). At every decode step the model proposes a distribution over its vocabulary (~150k tokens); PureCARD, given the tokens generated so far, returns a boolean bitmask over the vocabulary marking the tokens that keep the partial output on a path to a valid Pure query. The Python inference loop applies the mask (sets disallowed logits to −∞) before sampling. Output is valid by construction.
 
 Two constraint levels are both in scope; a third is explicitly out of scope:
 
@@ -43,7 +43,7 @@ Two constraint levels are both in scope; a third is explicitly out of scope:
 
 ### 1.3 The guarantee boundary (the single most important scoping fact)
 
-PureCard guarantees **validity** (L1: the query parses) and **schema-consistency** (L2: the query _compiles against this model_ — every identifier resolves and every operation type-checks). It does **NOT** and **CANNOT** guarantee **faithfulness** — that the query _means what was asked_.
+PureCARD guarantees **validity** (L1: the query parses) and **schema-consistency** (L2: the query _compiles against this model_ — every identifier resolves and every operation type-checks). It does **NOT** and **CANNOT** guarantee **faithfulness** — that the query _means what was asked_.
 
 The three levels form a strict containment hierarchy:
 
@@ -53,7 +53,7 @@ The three levels form a strict containment hierarchy:
         L3 — out of scope    L2 — in scope           L1 — in scope
 ```
 
-Read the containment right-to-left: every faithful query is schema-consistent, and every schema-consistent query is syntactic — but not vice versa. PureCard moves the output from "arbitrary text" into the _syntactic_ set (L1) and, with a schema, into the _schema-consistent_ set (L2). It **cannot** move it into the _faithful_ set.
+Read the containment right-to-left: every faithful query is schema-consistent, and every schema-consistent query is syntactic — but not vice versa. PureCARD moves the output from "arbitrary text" into the _syntactic_ set (L1) and, with a schema, into the _schema-consistent_ set (L2). It **cannot** move it into the _faithful_ set.
 
 Why faithfulness is structurally unreachable at decode time: the mask sees the schema and the partial output string, but **never the question's intent**. Consider a database with a `Singer` class. Both
 
@@ -77,7 +77,7 @@ are perfectly schema-consistent — `country` and `name` are both real String pr
 - **Not** a full Pure parser/compiler. Only the _emitted subset_ the trained model actually produces (class-anchored relation pipelines) needs to be recognized, and only far enough to mask next-tokens.
 - **Not** faithfulness, ranking, or repair. It prunes invalid branches; it does not choose the right valid one.
 - **Not** the training pipeline, the Python inference stack, tokenizer training, or general Rust project scaffolding. Only the decoder crate and its PyO3 boundary.
-- **Not** trajectory constraint. The model emits full agentic trajectories (tool calls, reasoning, then the final query); PureCard constrains **only the final-query span** — the Python loop activates it when that span begins (integration assumption, §9).
+- **Not** trajectory constraint. The model emits full agentic trajectories (tool calls, reasoning, then the final query); PureCARD constrains **only the final-query span** — the Python loop activates it when that span begins (integration assumption, §9).
 - **Not** full Pure syntax. The grammar is a deliberate over-approximation of validity in a few places (§5.6); the Legend compiler oracle (§8) catches escapes and drives tightening. Do not gold-plate — keep it minimal to stay fast and sound.
 - **Not** runtime data values. L2 never constrains literal _values_ (only their _types_), because any type-valid literal compiles.
 
@@ -120,9 +120,9 @@ are perfectly schema-consistent — `country` and `name` are both real String pr
 
 ## 12. Roadmap position and build triggers
 
-PureCard is an **inference-time serving optimization**, not an urgent-blocking dependency. It exists to deliver _guaranteed-valid Pure in a single forward pass_ at serving time, removing the compile-repair round-trip. Its place in the roadmap:
+PureCARD is an **inference-time serving optimization**, not an urgent-blocking dependency. It exists to deliver _guaranteed-valid Pure in a single forward pass_ at serving time, removing the compile-repair round-trip. Its place in the roadmap:
 
-**Build gate.** PureCard is gated on the conjunction of:
+**Build gate.** PureCARD is gated on the conjunction of:
 
 1. a trained model exists (that emits Pure), AND
 2. single-shot serving is committed (as opposed to compile-and-repair loops), AND
@@ -133,13 +133,13 @@ PureCard is an **inference-time serving optimization**, not an urgent-blocking d
 - **Build L1 first.** It is cheap, schema-independent, and delivers the syntactic guarantee with no schema plumbing. Ship after M2.
 - **Escalate to L2 only if** name-hallucination (phantom-identifier / type-mismatch) errors _specifically_ dominate the residual error after L1 + agentic schema-exploration. Measure before over-building — L2 may be partly redundant with the model's own agentic schema-exploration, so its marginal value must be demonstrated, not assumed. This spec exists so that, _if_ the trigger fires, the L2 rules are ready to implement — not as a mandate to build L2 unconditionally.
 
-**One-line placement.** PureCard is the durable Rust serving kernel that turns a trained Pure-emitting model's final-query span from "probably valid" into "valid by construction (L1), and — when the measurement justifies it — schema-consistent by construction (L2)," while never claiming to make it _faithful_.
+**One-line placement.** PureCARD is the durable Rust serving kernel that turns a trained Pure-emitting model's final-query span from "probably valid" into "valid by construction (L1), and — when the measurement justifies it — schema-consistent by construction (L2)," while never claiming to make it _faithful_.
 
 ---
 
 ## Appendix B — Prior art / references (for the implementer)
 
-- **PICARD** (Scholak, Schucher, Bahdanau, _"Parsing Incrementally for Constrained Auto-Regressive Decoding from Language Models,"_ EMNLP 2021) — the original SQL constrained decoder; incremental parsing + lexical/grammatical/schema-consistency tiers. PureCard is its Pure analogue.
+- **PICARD** (Scholak, Schucher, Bahdanau, _"Parsing Incrementally for Constrained Auto-Regressive Decoding from Language Models,"_ EMNLP 2021) — the original SQL constrained decoder; incremental parsing + lexical/grammatical/schema-consistency tiers. PureCARD is its Pure analogue.
 - **xgrammar** — Rust-cored grammar-constrained decoding; the context-independent/context-dependent token-mask partition and per-state caching (§4) follow its approach.
 - **llama.cpp GBNF** and **Outlines** — grammar/regex-constrained decoding designs; useful references for byte-level automaton masking (§4.4).
 - **Legend / Pure** — the FINOS Legend platform; the compile oracle is engine 4.113.0 at `http://localhost:6300/api`, endpoint `/pure/v1/compilation/lambdaReturnType` (§8.2).

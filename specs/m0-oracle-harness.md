@@ -6,7 +6,7 @@
 
 ## Problem
 
-PureCard is a byte-level grammar/schema-constrained decoder for Legend Pure. Before any real grammar (M1), mask cache (M2), or schema overlay (M3) exists, we need a **skeleton oracle harness** that proves the two load-bearing feedback loops are wired end to end:
+PureCARD is a byte-level grammar/schema-constrained decoder for Legend Pure. Before any real grammar (M1), mask cache (M2), or schema overlay (M3) exists, we need a **skeleton oracle harness** that proves the two load-bearing feedback loops are wired end to end:
 
 1. **Offline soundness replay** — every execution-verified gold Pure lambda in the corpus can be driven, byte by byte, through a throwaway byte recognizer, without ever dead-ending. This is the loop that will later catch a PDA that rejects a byte sequence the corpus actually produces.
 2. **Online completeness probe** — a gold lambda can be POSTed to Legend Engine's `/pure/v1/compilation/lambdaReturnType` and its return-type-vs-error result read back. This is the loop that will later measure the 100%-compile completeness gate.
