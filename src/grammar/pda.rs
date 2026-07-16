@@ -1529,6 +1529,7 @@ mod tests {
             State::InNumberInt,
             State::InNumberFrac,
             State::InDateLit,
+            State::InMilestoneLit,
             State::InStrLit { escaped: true },
         ] {
             assert!(

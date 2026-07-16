@@ -65,9 +65,10 @@ files.
 - **Harder / follow-on obligations:** there are now **two** soundness corpora to
   keep green; a reviewer must check that a new production is seeded in one of
   them. `tests/modern_dialect_soundness.rs` holds exact per-arm counts
-  (`SEED_ARM_A/C/R`) so a dropped or mislabelled seed reddens the gate. The
-  arm-R PR (G1) extends this file and its counts, and adds the `Envelope::Relation`
-  variant the seed lane classifies against.
+  (`SEED_ARM_A`, `SEED_ARM_C`) so a dropped or mislabelled seed reddens the gate.
+  This corpus currently holds the `%latest` milestoning seeds (arm-C); the arm-R
+  Relation/Function API is planned follow-on work that will extend this file and
+  its counts with `~`-bearing seeds and their own envelope classification.
 - **Relationship to prior ADRs:** complements ADR-0004 (both-arms M1 scope) — it
   does not change what `gold_queries.jsonl` encodes; it adds a second, separate
   oracle for constructs that corpus never held. It does not touch ADR-0002/0003

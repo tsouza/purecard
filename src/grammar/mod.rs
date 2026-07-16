@@ -65,10 +65,11 @@ impl Envelope {
     ///
     /// Returns [`Relational`](Envelope::Relational) if the query contains the
     /// `tableReference` marker, [`ClassNav`](Envelope::ClassNav) if it contains
-    /// the `.all()` marker, and `None` if neither (which, over the all-gold
-    /// corpus, cannot happen and so fails the soundness gate's per-arm tally).
-    /// The two markers are mutually exclusive across the corpus, so the order of
-    /// the checks does not change any gold classification.
+    /// the `.all(` marker (the opening paren, so a milestoned `.all(%latest)`
+    /// source still classifies as class-navigation), and `None` if neither (which,
+    /// over the all-gold corpus, cannot happen and so fails the soundness gate's
+    /// per-arm tally). The two markers are mutually exclusive across the corpus, so
+    /// the order of the checks does not change any gold classification.
     #[must_use]
     pub fn classify(query: &str) -> Option<Envelope> {
         if query.contains(RELATIONAL_MARKER) {

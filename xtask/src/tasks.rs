@@ -1252,6 +1252,35 @@ intro\n\n### 3.2 Crate layout\n\n```\npurecard/\n  vocab.rs   the vocab\n  sessi
     }
 
     #[test]
+    fn gold_ratio_citations_handles_comments_whitespace_and_quotes() {
+        // Inline `#` (or `//`) comment prose that mentions gold and a ratio is
+        // scanned like any other line — the parser keys on the word "gold", not on
+        // being outside a comment.
+        assert_eq!(
+            gold_ratio_citations("assert_eq!(n, 5034); // gold stays 5034/5034"),
+            [5034, 5034]
+        );
+        assert_eq!(
+            gold_ratio_citations("# gold soundness note: 5,034/5,034 replayed"),
+            [5034, 5034]
+        );
+        // Quotes around the ratio do not block it: a quote is neither a digit nor a
+        // comma, so it simply bounds the digit runs.
+        assert_eq!(
+            gold_ratio_citations(r#"the gold ratio is "5034/5034" today"#),
+            [5034, 5034]
+        );
+        // Whitespace around the slash breaks the ratio: a ratio is a *maximal*
+        // digit/comma run, a `/`, then another — `5034 / 5034` has an empty run on
+        // each side of the slash, so it is intentionally NOT read (the canonical
+        // citation form is the un-spaced `N/N`; the const/corpus checks are the
+        // real gate, this is a best-effort prose anchor).
+        assert!(gold_ratio_citations("gold stays 5034 / 5034").is_empty());
+        assert!(gold_ratio_citations("gold 5034/ 5034").is_empty());
+        assert!(gold_ratio_citations("gold 5034 /5034").is_empty());
+    }
+
+    #[test]
     fn parse_grouped_strips_separators() {
         assert_eq!(parse_grouped("5,034"), Some(5034));
         assert_eq!(parse_grouped("395"), Some(395));

@@ -23,8 +23,9 @@ the emitted dialect.
       legal (`.all(%latest)`, `.PROP(%latest, %latest)`, comparison operands).
 - [ ] Bare `%` and malformed `%`-literals stay dead (the existing precision pin
       holds).
-- [ ] New gold seed is added to `corpus/gold_queries.jsonl` so the addition is
-      oracle-driven, not invented; the soundness gate replays it green.
+- [ ] Modern-dialect seeds are added to `corpus/modern_dialect_seeds.jsonl` (a
+      separate provenance-distinct corpus, ADR-0007) so the addition is
+      oracle-driven, not invented; the modern soundness lane replays them green.
 - [ ] Every testing layer covers the new construct (see Testing plan).
 
 ## Non-goals
@@ -52,18 +53,20 @@ sanctions and the compiler/L2 re-checks). One new automaton state carries it:
   `lexeme_kind` is `LexKind::Date` (it is a `%`-literal), so the L2 scope tracker
   buffers and classifies it identically to a numeric date literal.
 
-Oracle: gold seed strings in `corpus/gold_queries.jsonl` (see Testing plan). Spec
-§5.4/§5.5/§5.7 of `docs/spec/grammar.md` gain the `milestoneLit` production and
-its inventory row.
+Oracle: seed strings in `corpus/modern_dialect_seeds.jsonl` (see Testing plan).
+Spec §5.4/§5.5/§5.6/§5.8 of `docs/spec/grammar.md` gain the `milestoneLit`
+production and its seed-corpus inventory row.
 
 ## API / contract impact
 
-None. No public Rust signature or PyO3 boundary changes — this widens the fixed
-internal grammar only. `State::COUNT` grows by one; the mask cache
-(`compiled.rs`) keys on `State::COUNT`/`index()` dynamically, so it adapts with no
-call-site change. The `pub` `State` enum grows one additive variant; the
-`cargo-public-api` baseline is refreshed via `just public-api-bless` as an
-intended, documented surface change.
+No **callable** surface changes: no public function/method signature, no PyO3
+boundary symbol, and no crate/package name changes. The one public-API delta is an
+**additive `State` enum variant** (`State::InMilestoneLit`): `State` is `pub` and
+not `#[non_exhaustive]`, so an added variant can break a downstream *exhaustive*
+match — but the enum has grown additively across every milestone and
+`cargo-semver-checks` passes it (verified in the gate). `State::COUNT` grows by
+one; the mask cache (`compiled.rs`) keys on `State::COUNT`/`index()` dynamically,
+so it adapts with no call-site change.
 
 ## Testing plan
 
@@ -71,8 +74,9 @@ intended, documented surface change.
   / `index` bijection / `lexeme_kind == Date`; transition tests — `%latest`,
   `%latestdate` accept and complete; `%l` mid-literal is non-accepting; the
   uppercase/digit boundary stays dead.
-- **Soundness** (`tests/soundness_replay.rs`): new `%latest` gold seed replays
-  green; `ARM_C` count constant bumped to match the added class-nav seeds.
+- **Soundness** (`tests/modern_dialect_soundness.rs`): the `%latest` seeds replay
+  green and classify as arm-C; the frozen 5,034-gold partition
+  (`tests/soundness_replay.rs`) is unchanged.
 - **Precision** (`tests/precision_reject.rs`): bare `%` still dies
   (`take(%)`, `< %`); `%LATEST` (uppercase) and `%latest1` boundary rejects that
   pin the lowercase-letters-only lexeme.

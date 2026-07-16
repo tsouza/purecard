@@ -133,5 +133,8 @@ def test_a_latest_milestoning_query_streams_end_to_end():
         assert _bit_set(mask, token_id), f"gold token {token_id} must be admissible"
         session.accept_token(token_id)
     assert session.is_complete()
-    # The completed stream sets the reserved EOS bit (index == len(vocab)).
+    # The completed stream sets the reserved EOS bit — at index `len(vocab)` (one
+    # past the last token id), exactly as the base fixture asserts, not at the
+    # `eos_id` field — and EOS is then acceptable.
     assert _bit_set(session.allowed_mask(), len(LATEST_VOCAB))
+    session.accept_token(len(LATEST_VOCAB))

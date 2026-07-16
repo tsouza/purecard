@@ -2,17 +2,17 @@
 //! (`corpus/modern_dialect_seeds.jsonl`).
 //!
 //! `corpus/gold_queries.jsonl` is the Spider-derived, execution-verified gold that
-//! the L1 grammar was distilled from; it deliberately never exercised the modern
-//! Legend Pure constructs the fine-tuned model also emits (the `%latest`
-//! milestoning literal — gap report §5/G2 — and, once landed, the `~`
-//! Relation/Function API — G1/arm-R). Those constructs are seeded here, in a
-//! *separate* file with distinct provenance (the pure-research gap report, not the
-//! Spider pipeline), so the 5,034-query gold corpus and every doc citation of its
-//! count stay untouched.
+//! the L1 grammar was distilled from; it never exercised the modern Legend Pure
+//! constructs the fine-tuned model also emits (the `%latest` milestoning literal —
+//! gap report §5/G2). Those are seeded here, in a *separate* file with distinct
+//! provenance (the pure-research gap report, not the Spider pipeline), so the
+//! 5,034-query gold corpus and every doc citation of its count stay untouched
+//! (ADR-0007).
 //!
 //! The property is the same killer property as `soundness_replay.rs`: every seed
 //! streams through the **real** shipped byte-PDA without a dead state and ends
-//! accepting. Each seed also classifies to the envelope its `arm` field declares,
+//! accepting. Each seed also classifies to the envelope its `arm` field declares
+//! (`A` → relational, `C` → class-navigation; an unknown `arm` value is rejected),
 //! and the per-arm tallies are asserted against exact named constants so a dropped
 //! or mis-labelled seed reddens the gate.
 #![forbid(unsafe_code)]
@@ -34,11 +34,8 @@ use purecard::{ByteRecognizer, DecodeError, DecoderSession, Envelope};
 const SEED_ARM_A: usize = 0;
 /// Arm-C (class-navigation) seed count — the `%latest` milestoning seeds (G2).
 const SEED_ARM_C: usize = 5;
-/// Arm-R (Relation/Function API) seed count — the `~` arm-R seeds (G1). Zero until
-/// that PR lands and adds its rows to `corpus/modern_dialect_seeds.jsonl`.
-const SEED_ARM_R: usize = 0;
-/// The full modern-dialect seed count — the sum of the three arms.
-const EXPECTED_SEED_RECORDS: usize = SEED_ARM_A + SEED_ARM_C + SEED_ARM_R;
+/// The full modern-dialect seed count — the sum of the arms.
+const EXPECTED_SEED_RECORDS: usize = SEED_ARM_A + SEED_ARM_C;
 
 fn seed_corpus_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("corpus/modern_dialect_seeds.jsonl")
