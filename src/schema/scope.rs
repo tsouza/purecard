@@ -13,7 +13,7 @@
 //! [`L2Position::None`] (pass-through), so a position the tracker cannot type is
 //! left exactly as L1 allowed it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::grammar::pda::{Frame, LexKind, Pda, State, Step, is_ident_start, is_ident_tail, step};
 use crate::schema::model::{Resolved, Schema, TypeClass};
@@ -146,9 +146,22 @@ pub(crate) enum L2Position {
     ReValue(TypeClass),
     /// N6: a relation-column string reference must name an emitted column.
     Column,
+    /// N6 (arm-R): a *bare-ident* column access `$row.<Col>` on a relation row
+    /// must name an emitted column — the unquoted dual of [`Column`](L2Position::Column).
+    RelationColumn,
     /// No L2 constraint here — pass the L1 mask through unchanged.
     None,
 }
+
+/// The method that opens a pipeline from a class extent (`Class.all()`). A call
+/// to it below the top level is a *nested* pipeline whose arm/relation state must
+/// not inherit or leak the enclosing pipeline's.
+const SOURCE_METHOD: &str = "all";
+
+/// The least delimiter depth at which an `all()` call is *nested*: the top-level
+/// `|Class.all()` sits at depth 1, so a call at depth 2 or deeper is inside a
+/// lambda body and heads a nested pipeline.
+const NESTED_SOURCE_MIN_DEPTH: u32 = 2;
 
 /// Names the L1 methods that establish a named relation scope (§6.4.5/6.4.6):
 /// after one of these calls closes, subsequent column references are narrowed
@@ -192,6 +205,31 @@ struct Pending {
     /// unnarrowed lexeme such as a keyword or a plain operand), read by
     /// [`position`](ScopeTracker::position) while the lexeme is in flight.
     pos: L2Position,
+}
+
+/// A lambda binder's shadowed prior binding, saved at its `|` and restored when
+/// the enclosing delimiter closes (§6.4 lexical scoping). `prev_class` is `None`
+/// when the name had no class binding to restore.
+#[derive(Debug, Clone)]
+struct BinderSave {
+    depth: u32,
+    name: String,
+    prev_class: Option<Option<String>>,
+    prev_relation_row: bool,
+}
+
+/// The enclosing pipeline's state, snapshotted at a lambda body's binder pipe and
+/// restored when the body's delimiter closes (§6.4 lexical scoping). A lambda body
+/// is the one lexical region where a *nested pipeline* — headed by `Class.all()`
+/// or by a navigation (`$x.rel->groupBy(~[…])`) — can appear; restoring on close
+/// stops that subquery's class and arm/relation state from leaking out and
+/// re-classifying an outer binder or navigation.
+#[derive(Debug, Clone)]
+struct ScopeSave {
+    depth: u32,
+    prev_cur_class: Option<String>,
+    prev_rel_explicit: bool,
+    prev_saw_tilde_bracket: bool,
 }
 
 /// The §6.4 scope machine, advanced in lockstep with the byte-PDA.
@@ -243,9 +281,40 @@ pub(crate) struct ScopeTracker {
     last_ident: Option<String>,
     /// Have we passed a *closed* establishing op (a named relation exists)?
     rel_explicit: bool,
-    /// Every string literal emitted so far — the N6 legal column set (a superset,
-    /// so a real reference to a previously-emitted name is never masked). Stored as
-    /// raw bytes, byte-exact against the trie's `quote` key.
+    /// Has any `~[…]` opened? Latches the pipeline as arm-R (the Relation/Function
+    /// API); a pure arm-A/TDS pipeline never opens one. Gates arm-R relation-row
+    /// column narrowing so a TDS `$r.getString(…)` getter is never mistaken for a
+    /// column and masked.
+    saw_tilde_bracket: bool,
+    /// Per-open-delimiter flag: was this delimiter a `~[…]` column set? Pushed and
+    /// popped in lockstep with [`paren_receiver`](Self::paren_receiver), so an
+    /// identifier at the `ExpectValue` key position of the innermost open delimiter
+    /// is a column name exactly when the top flag is set.
+    tilde_open: Vec<bool>,
+    /// Lambda variables bound to an arm-R **relation row** (a post-establishing-op
+    /// row over the emitted-column universe), so `$row.<Col>` is a bare-ident column
+    /// access (N6), not a class member navigation.
+    relation_row_vars: HashSet<String>,
+    /// The binding a lambda binder shadowed, restored when its enclosing delimiter
+    /// closes — so a lambda scope cannot leak its binder into an outer scope that
+    /// reuses the name (`filter(x|…innerRelation with x…) … $x.member`). Without it a
+    /// re-used name keeps the inner scope's class/relation-row classification and
+    /// masks a valid outer navigation.
+    binder_saves: Vec<BinderSave>,
+    /// The enclosing pipeline's class + arm/relation state at each open lambda body,
+    /// saved at the binder pipe and restored when the body's delimiter closes — so a
+    /// nested pipeline inside the body (a `Class.all()` *or* a navigation-headed
+    /// `$x.rel->groupBy(~[…])` subquery) cannot leak its source class, `rel_explicit`,
+    /// or `saw_tilde_bracket` out to re-classify an outer binder or navigation.
+    scope_saves: Vec<ScopeSave>,
+    /// A `.` was just seen over a relation-row binder; the following identifier is a
+    /// bare-ident column reference ([`RelationColumn`](L2Position::RelationColumn)).
+    dot_is_column: bool,
+    /// Every column name emitted so far — quoted string literals (arm-A N6,
+    /// `~'Gross Credits'`) and arm-R `~`-introduced names (`~Col`, `~[Week, …]`
+    /// keys). A superset stored as raw (unquoted) bytes, so a real reference to a
+    /// previously-emitted name is never masked; the quoted `Column` narrower keys on
+    /// `quote(c)` and the bare `RelationColumn` narrower on `c` itself.
     emitted_strings: Vec<Vec<u8>>,
 }
 
@@ -444,7 +513,7 @@ impl ScopeTracker {
                 }
             }
             Lexeme::Pipe => self.on_pipe(pre_state),
-            Lexeme::Open => self.on_open(),
+            Lexeme::Open => self.on_open(pre_state),
             Lexeme::Close => self.on_close(),
             Lexeme::Comma => {
                 self.lambda_first_ident = None;
@@ -519,6 +588,19 @@ impl ScopeTracker {
             }
             _ => {}
         }
+        // Record an arm-R column *name* into the emitted-column universe: a bare
+        // `~Col` (anchored at `SawTilde`), or a `~[…]` key — an identifier at a value
+        // position directly inside the innermost tilde bracket (`~[Week, Segment]`,
+        // and the name before the `:` in `~[Week: …]`). The first key opens at
+        // `ExpectValue`, a key after a comma at `ExpectValueReq`; both count. Body
+        // identifiers sit behind a `$`/`.`/`|`, never at a bracket-level value anchor,
+        // so they are not collected. Over-recording only lets more through, never
+        // masks, so the set stays a superset of the columns live on any relation row.
+        let in_tilde_key = matches!(pre_state, State::ExpectValue | State::ExpectValueReq)
+            && self.tilde_open.last() == Some(&true);
+        if pre_state == State::SawTilde || in_tilde_key {
+            self.emitted_strings.push(text.as_bytes().to_vec());
+        }
         self.last_ident = Some(text.to_owned());
     }
 
@@ -528,6 +610,15 @@ impl ScopeTracker {
         schema: &Schema,
         resolved_now: &mut Option<TypeClass>,
     ) {
+        if self.dot_is_column {
+            // A bare-ident column access (`$row.Col`) terminates navigation: a
+            // column is a value, not a class, so no member resolves and a following
+            // `.` degrades to pass-through.
+            self.dot_is_column = false;
+            self.nav_cursor = None;
+            self.last_nav_class = None;
+            return;
+        }
         let Some(base) = self.dot_base.take() else {
             // A dot that is not a member navigation (`.all()`, `.getX`, `$r.` over
             // an unknown binder): no resolution, no cursor change.
@@ -551,8 +642,17 @@ impl ScopeTracker {
     }
 
     fn on_dot(&mut self) {
+        self.dot_is_column = false;
         if let Some(var) = self.pending_refvar.take() {
-            self.dot_base = self.var_class.get(&var).cloned().flatten();
+            if self.relation_row_vars.contains(&var) {
+                // `$row.` over an arm-R relation-row binder: the next identifier is a
+                // bare-ident column reference, narrowed against the emitted-column
+                // universe rather than a class's members.
+                self.dot_is_column = true;
+                self.dot_base = None;
+            } else {
+                self.dot_base = self.var_class.get(&var).cloned().flatten();
+            }
         } else if let Some(cursor) = &self.nav_cursor {
             self.dot_base = Some(cursor.clone());
         } else {
@@ -578,23 +678,68 @@ impl ScopeTracker {
         if matches!(pre_state, State::Start | State::ExpectSource) {
             return;
         }
+        // Snapshot the enclosing pipeline's class and arm/relation state as the lambda
+        // body begins — before a nested pipeline in the body (`Class.all()` or a
+        // navigation-headed subquery) can change them — so the body's delimiter close
+        // restores them and the nested pipeline's state cannot leak out.
+        self.scope_saves.push(ScopeSave {
+            depth: self.depth,
+            prev_cur_class: self.cur_class.clone(),
+            prev_rel_explicit: self.rel_explicit,
+            prev_saw_tilde_bracket: self.saw_tilde_bracket,
+        });
         if let Some(name) = self.lambda_first_ident.take()
             && !name.is_empty()
         {
+            // Save the binding this lambda shadows, so the enclosing delimiter's close
+            // restores it and the binder cannot leak into an outer scope reusing the
+            // name.
+            self.binder_saves.push(BinderSave {
+                depth: self.depth,
+                name: name.clone(),
+                prev_class: self.var_class.get(&name).cloned(),
+                prev_relation_row: self.relation_row_vars.contains(&name),
+            });
             let receiver = self.paren_receiver.last().cloned().flatten();
-            self.var_class.insert(name, receiver);
+            if receiver.is_none() && self.rel_explicit && self.saw_tilde_bracket {
+                // An arm-R relation-row binder (a map lambda over a closed
+                // establishing op's tilde relation): `$name.<Col>` is a bare-ident
+                // column access. Track it apart from the class map so on_dot narrows
+                // to the column universe instead of degrading to pass-through.
+                self.var_class.remove(&name);
+                self.relation_row_vars.insert(name);
+            } else {
+                self.relation_row_vars.remove(&name);
+                self.var_class.insert(name, receiver);
+            }
         }
     }
 
-    fn on_open(&mut self) {
+    fn on_open(&mut self, pre_state: State) {
         let method = self.last_ident.take();
         self.depth += 1;
+        // A `~[` opens a relation column set: latch the pipeline as arm-R, so an
+        // `ExpectValue` key identifier inside it is a column name and a following
+        // relation-row binder narrows column access. The flag is pushed for *every*
+        // open (in lockstep with `paren_receiver`) so nesting pops it cleanly.
+        let is_tilde_bracket = pre_state == State::SawTilde;
+        self.saw_tilde_bracket |= is_tilde_bracket;
+        self.tilde_open.push(is_tilde_bracket);
         if let Some(name) = &method {
             if ESTABLISHING_METHODS.contains(&name.as_str()) {
                 self.est_stack.push(self.depth);
             }
             if REF_METHODS.contains(&name.as_str()) {
                 self.ref_stack.push(self.depth);
+            }
+            // A nested `all()` heads a fresh class-extent pipeline inside a lambda
+            // body: reset the arm state so the subquery's own establishing ops
+            // classify its binders against a clean baseline. The enclosing body's
+            // `ScopeSave` (taken at its binder pipe) restores the outer state on close,
+            // so this reset cannot leak back out.
+            if name.as_str() == SOURCE_METHOD && self.depth >= NESTED_SOURCE_MIN_DEPTH {
+                self.rel_explicit = false;
+                self.saw_tilde_bracket = false;
             }
         }
         let receiver = self
@@ -606,6 +751,51 @@ impl ScopeTracker {
     }
 
     fn on_close(&mut self) {
+        // Restore every binder introduced at the closing delimiter's depth to what it
+        // shadowed, so a lambda's binder never outlives its scope (§6.4). Deeper
+        // scopes have already restored and popped, so the depth-matching saves are
+        // contiguous at the top of the stack.
+        while self
+            .binder_saves
+            .last()
+            .is_some_and(|save| save.depth == self.depth)
+        {
+            let Some(save) = self.binder_saves.pop() else {
+                break;
+            };
+            match save.prev_class {
+                Some(class) => {
+                    self.var_class.insert(save.name.clone(), class);
+                }
+                None => {
+                    self.var_class.remove(&save.name);
+                }
+            }
+            if save.prev_relation_row {
+                self.relation_row_vars.insert(save.name);
+            } else {
+                self.relation_row_vars.remove(&save.name);
+            }
+        }
+        // Restore the enclosing pipeline's class + arm/relation state for lambda
+        // bodies closing here, so a nested subquery (an `all()` or navigation-headed
+        // pipeline in the body) cannot leak its class or arm-R state past its scope.
+        // This runs *before* the establishing-op block below, which then re-clears
+        // `cur_class` to `None` when this delimiter is a `project`/`groupBy`
+        // (relation → TDS row).
+        while self
+            .scope_saves
+            .last()
+            .is_some_and(|save| save.depth == self.depth)
+        {
+            let Some(save) = self.scope_saves.pop() else {
+                break;
+            };
+            self.cur_class = save.prev_cur_class;
+            self.rel_explicit = save.prev_rel_explicit;
+            self.saw_tilde_bracket = save.prev_saw_tilde_bracket;
+        }
+        self.tilde_open.pop();
         if self.ref_stack.last() == Some(&self.depth) {
             self.ref_stack.pop();
         }
@@ -657,10 +847,16 @@ impl ScopeTracker {
             State::ExpectSource | State::BlockStmt | State::BlockStmtClose => {
                 L2Position::SourceIdent
             }
-            State::AfterDot => match &self.dot_base {
-                Some(base) => L2Position::Member(base.clone()),
-                None => L2Position::None,
-            },
+            State::AfterDot => {
+                if self.dot_is_column {
+                    L2Position::RelationColumn
+                } else {
+                    match &self.dot_base {
+                        Some(base) => L2Position::Member(base.clone()),
+                        None => L2Position::None,
+                    }
+                }
+            }
             State::ExpectValue | State::ExpectValueReq => {
                 if let Some(tc) = self.cmp_pending {
                     L2Position::ReValue(tc)
@@ -702,6 +898,9 @@ mod tests {
         "A": { "simple_name": "A", "properties": [
           {"name": "n", "type": {"kind": "primitive", "name": "Integer"}, "mult": {"lower": 1, "upper": 1}},
           {"name": "s", "type": {"kind": "primitive", "name": "String"}, "mult": {"lower": 0, "upper": 1}}
+        ] },
+        "B": { "simple_name": "B", "properties": [
+          {"name": "m", "type": {"kind": "primitive", "name": "Integer"}, "mult": {"lower": 1, "upper": 1}}
         ] } },
       "associations": [], "enums": {}
     }"#;
@@ -812,6 +1011,27 @@ mod tests {
         let (tracker, pda) = run(&[b"|", b"A", b"."]);
         assert_eq!(pda.state(), State::AfterDot);
         assert_eq!(tracker.position(pda.state()), L2Position::None);
+    }
+
+    #[test]
+    fn a_nested_pipeline_source_class_does_not_leak_to_an_outer_navigation() {
+        // Soundness: an outer `A` pipeline whose filter predicate is a *nested* `B`
+        // subquery. The nested `B.all()` sets `cur_class` to B; scoping must restore
+        // the outer `A` when the filter closes, so the outer `map(z|$z.` navigation is
+        // narrowed against A (which has member `n`), not the leaked B. Without the
+        // per-scope `cur_class` restore, `$z.n` was masked (B has no `n`).
+        // `|A.all()->filter(x|B.all()->isEmpty())->map(z|$z.`
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"B", b".",
+            b"all", b"(", b")", b"->", b"isEmpty", b"(", b")", b")", b"->", b"map", b"(", b"z",
+            b"|", b"$", b"z", b".",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::AfterDot);
+        assert_eq!(
+            tracker.position(pda.state()),
+            L2Position::Member("A".to_owned())
+        );
     }
 
     #[test]
@@ -985,13 +1205,14 @@ mod tests {
     }
 
     #[test]
-    fn an_arm_r_map_lambda_binder_rebinds_after_a_preceding_filter() {
-        // Soundness regression (gap report G-L2): the arm-R aggregation map lambda
-        // binds its variable *after* a colon (`~'s': x|…`), which the byte-PDA parks
-        // in an `InIdent` reached from `AfterColon`/`AfterColonWs` rather than a value
-        // state. If that binder is not re-captured, a re-used name keeps whatever
-        // class a preceding `filter(x|…)` lambda bound it to, and N1 unsoundly masks
-        // the projected column `$x.C` (A has no member `C`).
+    fn an_arm_r_map_lambda_binder_narrows_columns_after_a_preceding_filter() {
+        // The arm-R aggregation map lambda binds its variable *after* a colon
+        // (`~'s': x|…`), which the byte-PDA parks in an `InIdent` reached from
+        // `AfterColon`/`AfterColonWs`. That binder is re-captured (gap report G-L2, so
+        // a re-used name cannot keep the class a preceding `filter(x|…)` gave it) and,
+        // because the pipeline is now an arm-R relation, bound as a *relation row*: its
+        // `$x.C` is a bare-ident column access narrowed against the emitted-column
+        // universe (which contains the projected column `C`), not a class member.
         //
         // `|A.all()->filter(x|$x.n>=0)->project(~[C: x|$x.n])->groupBy(~[C], ~'s': x|$x.`
         let tokens: &[&[u8]] = &[
@@ -1001,11 +1222,112 @@ mod tests {
             b"]", b",", b"~", b"'s'", b":", b"x", b"|", b"$", b"x", b".",
         ];
         let (tracker, pda) = run(tokens);
-        assert_eq!(pda.state(), State::AfterDot, "at the `$x.` member position");
-        // The groupBy binder `x` rebound to the (post-project) relation row — unknown
-        // class — so the column position degrades to pass-through, never a mask of a
-        // real projected column.
+        assert_eq!(pda.state(), State::AfterDot, "at the `$x.` column position");
+        assert_eq!(tracker.position(pda.state()), L2Position::RelationColumn);
+        // `C` is in the emitted-column universe, so the narrower admits it — the real
+        // projected column is never masked.
+        assert!(tracker.emitted_columns().contains(&b"C".to_vec()));
+    }
+
+    #[test]
+    fn an_arm_a_tds_row_is_not_narrowed_as_an_arm_r_column() {
+        // An arm-A `project([…], […])` opens no `~[`, so the pipeline never latches
+        // arm-R: a following TDS-row binder stays off the relation-column path and
+        // `$r.getString(…)` is pass-through (`None`), never masked as a phantom column.
+        // `|A.all()->project([x|$x.n], ['Name'])->filter(r|$r.`
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"project", b"(", b"[", b"x", b"|", b"$",
+            b"x", b".", b"n", b"]", b",", b"[", b"'Name'", b"]", b")", b"->", b"filter", b"(",
+            b"r", b"|", b"$", b"r", b".",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::AfterDot);
         assert_eq!(tracker.position(pda.state()), L2Position::None);
+    }
+
+    #[test]
+    fn the_emitted_column_universe_collects_arm_r_names() {
+        // The column universe is a superset: it records `~[…]` keys (project and
+        // groupBy), bare `~col` refs, and quoted agg names — so a later `$row.Col`
+        // narrowing finds every emitted column. The sort uses a *distinct* `~Bare`
+        // so the bare-`~` (`SawTilde`) recording path is verified independently of
+        // the `~[…]` key `C`.
+        // `|A.all()->project(~[C: x|$x.n])->groupBy(~[C], ~'Agg': x|$x.C : y|$y->sum())->sort([ascending(~Bare)])`
+        let tokens: &[&[u8]] = &[
+            b"|",
+            b"A",
+            b".",
+            b"all",
+            b"(",
+            b")",
+            b"->",
+            b"project",
+            b"(",
+            b"~",
+            b"[",
+            b"C",
+            b":",
+            b"x",
+            b"|",
+            b"$",
+            b"x",
+            b".",
+            b"n",
+            b"]",
+            b")",
+            b"->",
+            b"groupBy",
+            b"(",
+            b"~",
+            b"[",
+            b"C",
+            b"]",
+            b",",
+            b"~",
+            b"'Agg'",
+            b":",
+            b"x",
+            b"|",
+            b"$",
+            b"x",
+            b".",
+            b"C",
+            b":",
+            b"y",
+            b"|",
+            b"$",
+            b"y",
+            b"->",
+            b"sum",
+            b"(",
+            b")",
+            b")",
+            b"->",
+            b"sort",
+            b"(",
+            b"[",
+            b"ascending",
+            b"(",
+            b"~",
+            b"Bare",
+            b")",
+            b"]",
+            b")",
+        ];
+        let (tracker, _pda) = run(tokens);
+        let cols = tracker.emitted_columns();
+        assert!(
+            cols.contains(&b"C".to_vec()),
+            "project/groupBy key `C` recorded"
+        );
+        assert!(
+            cols.contains(&b"Agg".to_vec()),
+            "quoted agg name `Agg` recorded"
+        );
+        assert!(
+            cols.contains(&b"Bare".to_vec()),
+            "bare `~Bare` sort reference recorded"
+        );
     }
 
     #[test]
