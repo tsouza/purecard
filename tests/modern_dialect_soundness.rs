@@ -34,8 +34,10 @@ use purecard::{ByteRecognizer, DecodeError, DecoderSession, Envelope};
 const SEED_ARM_A: usize = 0;
 /// Arm-C (class-navigation) seed count — the `%latest` milestoning seeds (G2).
 const SEED_ARM_C: usize = 5;
-/// Arm-R (Relation/Function API) seed count — the `~` arm-R seeds (G1).
-const SEED_ARM_R: usize = 11;
+/// Arm-R (Relation/Function API) seed count — the `~` arm-R seeds (G1) plus the
+/// three engine-validated nested-subquery shapes contributed for the gap report
+/// (`join`/`extend` with a nested `Class.all()` and quoted-member access).
+const SEED_ARM_R: usize = 14;
 /// The full modern-dialect seed count — the sum of the three arms.
 const EXPECTED_SEED_RECORDS: usize = SEED_ARM_A + SEED_ARM_C + SEED_ARM_R;
 
