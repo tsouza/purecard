@@ -117,6 +117,8 @@ The decoder never calls Legend; the host builds `Schema` once, at session init, 
 
 How the PMCD / MCP tools are queried to *populate* the contract is host-side. This spec defines the contract's *shape and semantics*, not the extraction, and the decoder ingests `Schema` from JSON at session init (`Schema::from_json`, §9).
 
+**L2 enforcement is mask-first.** `allowed_mask()` is the *sole* point that enforces the **shipped** L2 rules (§6.7 — N1/N2/N3/N6/T1; the deferred rules pass through unconstrained): with a schema set it intersects the syntactic (L1) mask with that schema-legal set, clearing tokens illegal under a shipped rule. `accept_token`/`accept_byte` enforce only the **grammar** — a schema-masked token that is grammar-legal is still accepted (the L2 tracker advances in lockstep so the *next* mask is correct, but acceptance is never gated on the narrow). The host contract is therefore: read `allowed_mask()`, sample only from the admitted set, then commit with `accept_token`. Do not treat `accept_token` as a schema-validation backstop, nor `allowed_mask` as a guarantee of full schema validity — it enforces only the shipped rules.
+
 ### 6.4 The scope-tracking state machine
 
 L2 maintains a small **scope stack**. The top-of-stack `Scope` determines narrowing. A `Scope` is one of:

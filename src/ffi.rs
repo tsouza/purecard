@@ -167,6 +167,11 @@ impl Session {
     /// `id` at byte `id / 8`, position `id % 8`. The EOS bit is at index
     /// [`vocab_len`](Session::vocab_len). Unpack in Python with
     /// `np.unpackbits(mask, bitorder="little")[:vocab_len + 1]`.
+    ///
+    /// This mask is the **sole point that enforces the shipped schema (L2) rules**
+    /// (`docs/spec/schema.md` §6.7): with a schema set, it clears tokens illegal
+    /// under those rules (deferred rules pass through). `accept_token` checks only
+    /// the grammar — the contract is to sample from this mask, then commit.
     fn allowed_mask<'py>(&mut self, py: Python<'py>) -> Bound<'py, PyBytes> {
         let buf = &mut self.mask;
         self.cell.with_dependent_mut(|_, session| {
@@ -178,6 +183,11 @@ impl Session {
     /// Advance by one whole token id, or raise [`PureCARDError`] if the token is
     /// inadmissible (its bytes dead-end the recognizer, it is out of range, or it
     /// is a premature EOS). A rejected token leaves the session untouched (§8.5).
+    ///
+    /// "Inadmissible" here means **grammar**-inadmissible (L1). This does not raise
+    /// on a token that is grammar-legal but schema-masked: `accept_token` is not a
+    /// schema backstop. `allowed_mask` is the sole point that enforces the shipped
+    /// schema (L2) rules — sample from it, then commit with `accept_token`.
     fn accept_token(&mut self, id: u32) -> PyResult<()> {
         self.cell
             .with_dependent_mut(|_, session| session.accept_token(id))?;
