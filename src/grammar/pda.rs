@@ -1225,8 +1225,56 @@ impl Pda {
 #[cfg(test)]
 mod tests {
     use super::{
-        Frame, LexKind, Pda, State, Step, WS, is_date_char, is_ident_start, is_ident_tail, step,
+        ALL_FRAMES, Frame, LexKind, Pda, State, Step, WS, is_date_char, is_ident_start,
+        is_ident_tail, is_ws, step,
     };
+    use std::collections::{BTreeSet, HashSet, VecDeque};
+
+    /// Every frame top the transition function is probed against — the five
+    /// possible stack tops (empty + each `Frame`). Source-lane states read no
+    /// stack, so their verdict must be identical across all of these.
+    const TOPS: [Option<Frame>; 5] = [
+        None,
+        Some(Frame::Paren),
+        Some(Frame::Bracket),
+        Some(Frame::Brace),
+        Some(Frame::BraceLambda),
+    ];
+
+    /// The pipeline-*source* lane: the states that read a `Class`/classpath source
+    /// before any value navigation. None of them may admit a value-literal opener
+    /// (quote, `$`, `~`, digit, delimiter) — that is exactly the `|X.'name'`
+    /// class of over-admission.
+    const SOURCE_LANE: [State; 6] = [
+        State::ExpectSource,
+        State::InSourceIdent,
+        State::SourceColon,
+        State::SourceColon2,
+        State::SourceDash,
+        State::AfterSourceDot,
+    ];
+
+    /// The exact byte class each source-lane state admits, transcribed from its
+    /// arm in [`step`]. A widening of any source arm (e.g. a value opener leaking
+    /// in) makes the machine disagree with this redundant spec.
+    fn source_lane_admits(state: State, byte: u8) -> bool {
+        match state {
+            State::ExpectSource | State::AfterSourceDot => is_ws(byte) || is_ident_start(byte),
+            State::InSourceIdent => is_ident_tail(byte) || matches!(byte, b'.' | b'-' | b':'),
+            State::SourceColon => byte == b':',
+            State::SourceColon2 => is_ident_start(byte),
+            State::SourceDash => byte == b'>',
+            _ => unreachable!("not a source-lane state: {}", state.name()),
+        }
+    }
+
+    /// The set of bytes a state keeps alive at an empty stack top (a pure fn of
+    /// `step`), for symmetric-difference comparisons.
+    fn admits_at_top_none(state: State) -> BTreeSet<u8> {
+        (0u8..=u8::MAX)
+            .filter(|&b| !matches!(step(state, None, b), Step::Dead))
+            .collect()
+    }
 
     /// Every distinct automaton state, for the `index`/`COUNT` bijection check.
     /// [`State::index`]'s exhaustive match already makes a new variant a compile
@@ -1289,6 +1337,129 @@ mod tests {
             seen[idx] = true;
         }
         assert!(seen.iter().all(|&hit| hit), "index left a gap in 0..COUNT");
+    }
+
+    #[test]
+    fn source_lane_states_admit_exactly_their_declared_byte_class() {
+        // The whole class behind the `|X.'name'` incident: a value-literal opener
+        // (quote, `$`, `~`, `%`, digit, `(`/`[`/`{`) becoming alive in a pipeline
+        // *source* position. Pin every source-lane state's admit-set to its
+        // transcribed predicate, exhaustively over all 256 bytes AND all five stack
+        // tops (source states read no stack, so the top must never change the
+        // verdict — this also pins that stack-independence). Any future widening of
+        // a source arm disagrees with the redundant spec and reddens here, naming
+        // the exact byte and state.
+        for state in SOURCE_LANE {
+            for top in TOPS {
+                for byte in 0u8..=u8::MAX {
+                    let alive = !matches!(step(state, top, byte), Step::Dead);
+                    assert_eq!(
+                        alive,
+                        source_lane_admits(state, byte),
+                        "{} admits {byte:#04x} (top {top:?}): source-lane admit-set drifted",
+                        state.name(),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn value_dot_and_source_dot_differ_only_by_the_quoted_member() {
+        // The `|X.'name'` incident pinned exactly, in both directions: the value
+        // navigation dot (`$x.`) admits a quoted member; the source dot (`X.`) does
+        // not. Their admit-sets must differ by exactly the quote. This catches the
+        // quote re-leaking into source position (symdiff shrinks), the quoted-member
+        // feature being dropped from value position (symdiff shrinks), any other byte
+        // drifting into one dot but not the other (symdiff grows), and a DRY
+        // re-merge of the two dot states (symdiff empties).
+        let value = admits_at_top_none(State::AfterDot);
+        let source = admits_at_top_none(State::AfterSourceDot);
+        let symdiff: Vec<u8> = value.symmetric_difference(&source).copied().collect();
+        assert_eq!(
+            symdiff,
+            vec![b'\''],
+            "value dot and source dot must differ only by the quoted member (`'`)",
+        );
+        assert!(matches!(
+            step(State::AfterDot, None, b'\''),
+            Step::Next(State::InStrLit { escaped: false })
+        ));
+        assert!(matches!(
+            step(State::AfterSourceDot, None, b'\''),
+            Step::Dead
+        ));
+    }
+
+    #[test]
+    fn every_state_is_reachable_and_no_state_is_a_black_hole() {
+        // A fixpoint BFS over (state, bounded stack) configs driven by `step` itself.
+        // Closes, in one deterministic gate, the silent "forgotten/mis-wired list
+        // entry" family the `AfterSourceDot` split belongs to: (a) an orphan state —
+        // registered but never actually reached by any transition (e.g. a `.` routed
+        // to the wrong post-dot state would strand it); (b) a black-hole sink — a
+        // state whose every edge is Dead; (c) frame-registration drift — a `Frame`
+        // pushed by `step` but missing from `ALL_FRAMES`. The bounded stack
+        // over-approximates reachability (only ever reaching *more* states), so it
+        // can never invent a false orphan.
+        const STACK_CAP: usize = 6;
+        // The stack is keyed by frame *index* (`Frame` is not `Hash`), so configs can
+        // dedup in a set without touching the public enum.
+        let frame_code = |f: Frame| ALL_FRAMES.iter().position(|&g| g == f).unwrap();
+        let mut seen_states: HashSet<State> = HashSet::new();
+        let mut pushed_frames: HashSet<usize> = HashSet::new();
+        let mut visited: HashSet<(State, Vec<usize>)> = HashSet::new();
+        let mut queue: VecDeque<(State, Vec<usize>)> = VecDeque::new();
+        let seed = (State::Start, Vec::new());
+        visited.insert(seed.clone());
+        queue.push_back(seed);
+        while let Some((state, stack)) = queue.pop_front() {
+            seen_states.insert(state);
+            let top = stack.last().map(|&i| ALL_FRAMES[i]);
+            for byte in 0u8..=u8::MAX {
+                let next = match step(state, top, byte) {
+                    Step::Dead => continue,
+                    Step::Next(s) => (s, stack.clone()),
+                    Step::Push(frame, s) => {
+                        pushed_frames.insert(frame_code(frame));
+                        if stack.len() >= STACK_CAP {
+                            continue;
+                        }
+                        let mut deeper = stack.clone();
+                        deeper.push(frame_code(frame));
+                        (s, deeper)
+                    }
+                    Step::Pop(s) => {
+                        let mut shallower = stack.clone();
+                        shallower.pop();
+                        (s, shallower)
+                    }
+                };
+                if visited.insert(next.clone()) {
+                    queue.push_back(next);
+                }
+            }
+        }
+        for state in ALL_STATES {
+            assert!(
+                seen_states.contains(&state),
+                "{} is unreachable from Start (orphan / mis-routed transition)",
+                state.name(),
+            );
+            let has_live_edge = TOPS
+                .iter()
+                .any(|&top| (0u8..=u8::MAX).any(|b| !matches!(step(state, top, b), Step::Dead)));
+            assert!(
+                has_live_edge,
+                "{} is a black-hole sink (every edge is Dead)",
+                state.name(),
+            );
+        }
+        let listed: HashSet<usize> = (0..ALL_FRAMES.len()).collect();
+        assert_eq!(
+            pushed_frames, listed,
+            "frames pushed by step() drifted from ALL_FRAMES",
+        );
     }
 
     #[test]
