@@ -74,6 +74,10 @@ enum CacheKey {
     /// N6 column set at a given emitted-column count (monotonic within a stream,
     /// so the count pins the set exactly).
     Column(usize),
+    /// N6 arm-R bare-ident column set at a given emitted-column count — the
+    /// unquoted dual of [`Column`](CacheKey::Column) (a distinct trie kind, so it
+    /// needs its own key).
+    RelationColumn(usize),
 }
 
 impl NarrowCache {
@@ -160,6 +164,16 @@ pub(crate) fn narrow_into(
             vocab,
             eos_bit,
             || Trie::from_names(columns.iter().map(|c| quote(c))),
+        ),
+        L2Position::RelationColumn => narrow_trie(
+            dst,
+            cache,
+            CacheKey::RelationColumn(columns.len()),
+            prefix,
+            TrieKind::Ident,
+            vocab,
+            eos_bit,
+            || Trie::from_names(columns.iter().cloned()),
         ),
     }
 }
@@ -502,6 +516,37 @@ mod tests {
         assert!(bit(&mask, 0), "an emitted column survives");
         assert!(!bit(&mask, 1), "an unemitted column string is masked");
         assert!(bit(&mask, 2), "a non-string token is kept");
+    }
+
+    #[test]
+    fn relation_column_keeps_emitted_bare_idents_and_masks_the_rest() {
+        // The arm-R dual of `column_*`: a bare-ident column access `$row.Col` is
+        // narrowed against the raw (unquoted) emitted-column universe.
+        let v = vocab(&[b"Cyl", b"Zzz", b"."]);
+        let cols = [b"Cyl".to_vec()];
+        let (applied, mask) = run(&L2Position::RelationColumn, &cols, v);
+        assert!(applied);
+        assert!(bit(&mask, 0), "an emitted column survives");
+        assert!(!bit(&mask, 1), "a phantom column ident is masked");
+        assert!(bit(&mask, 2), "a non-identifier token is kept");
+    }
+
+    #[test]
+    fn relation_column_keeps_a_leading_bpe_prefix_then_narrows() {
+        // A fragmented bare-ident column `Cyl` → `Cy` / `l`: the leading sub-token
+        // survives at the anchor; mid-ident the continuation is narrowed to the set.
+        let cols = [b"Cyl".to_vec()];
+        let (_a, mask) = run(&L2Position::RelationColumn, &cols, vocab(&[b"Cy", b"Zz"]));
+        assert!(bit(&mask, 0), "a leading column prefix survives");
+        assert!(!bit(&mask, 1), "a prefix off every column is masked");
+        let (_b, mask) = run_prefix(
+            &L2Position::RelationColumn,
+            &cols,
+            b"Cy",
+            vocab(&[b"l", b"x"]),
+        );
+        assert!(bit(&mask, 0), "the emitted column body survives");
+        assert!(!bit(&mask, 1), "a divergent continuation is masked");
     }
 
     #[test]

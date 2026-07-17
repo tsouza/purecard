@@ -19,6 +19,101 @@ mod lex;
 use l2::{TokenVocab, lex, load_schema};
 use purecard::{CompiledGrammar, DecoderSession};
 
+/// Replay a full `query` token-by-token through a schema-aware session for
+/// `db_id`, asserting the killer L2-soundness property on every step: the real
+/// token is admissible, is accepted, and the stream ends complete. The gold
+/// corpus is arm-A/arm-C only, so this is the arm-R L2 soundness net for a
+/// realistic `filter→project→groupBy→sort` aggregation pipeline.
+fn assert_streams_soundly_under_l2(db_id: &str, query: &str) {
+    let vocab = TokenVocab::build(&[query], &[]);
+    let grammar = CompiledGrammar::compile(vocab.vocab());
+    let schema = load_schema(db_id);
+    let mut session = DecoderSession::with_schema(&grammar, schema);
+    for (step, token) in lex(query).into_iter().enumerate() {
+        let id = vocab
+            .id_of(&token)
+            .unwrap_or_else(|| panic!("token not in vocab: {:?}", bytes_str(&token)));
+        assert!(
+            session.allowed_mask().test(id),
+            "L2 SOUNDNESS: arm-R rule masked a real token at step {step} ({:?}) in:\n  {query}",
+            bytes_str(&token)
+        );
+        session
+            .accept_token(id)
+            .unwrap_or_else(|err| panic!("real token rejected at step {step}: {err}\n  {query}"));
+    }
+    assert!(
+        session.is_complete(),
+        "L2 SOUNDNESS: arm-R pipeline did not complete:\n  {query}"
+    );
+}
+
+#[test]
+fn a_full_arm_r_aggregation_pipeline_streams_soundly_under_l2() {
+    // A realistic arm-R pipeline exercising, under an active schema, N1 members
+    // inside `project` (`$x.cylinders`/`$x.horsepower` on CarsData), the new
+    // relation-row column access in `groupBy` (`$x.Hp`, an emitted column), the
+    // `~`-column key/ref positions, and the reducer arrow. Every real token must
+    // stream — the arm-R analogue of the 269-gold `l2_soundness` replay.
+    let query = "|spider::car_1::model::default::CarsData.all()\
+        ->filter(x|$x.cylinders >= 0)\
+        ->project(~[Cyl: x|$x.cylinders, Hp: x|$x.horsepower])\
+        ->groupBy(~[Cyl], ~'TotalHp': x|$x.Hp : y|$y->sum())\
+        ->sort([ascending(~Cyl)])";
+    assert_streams_soundly_under_l2("car_1", query);
+}
+
+#[test]
+fn a_nested_arm_r_subquery_does_not_taint_the_outer_arm_a_pipeline() {
+    // Soundness: an arm-A/TDS pipeline whose filter predicate contains an *inner*
+    // arm-R aggregation subquery. The inner `~[` must not latch the outer pipeline
+    // as arm-R: the inner class navigation `$z.cylinders` stays admissible, the
+    // inner relation column `$w.K` narrows to the inner universe, and — after the
+    // subquery — the outer TDS getter `$r.getInteger('Cyl')` is NOT masked as a
+    // phantom column. (Without pipeline-arm scoping, `$z.cylinders` was masked.)
+    let query = "|spider::car_1::model::default::CarsData.all()\
+        ->project([x|$x.cylinders], ['Cyl'])\
+        ->filter(q|spider::car_1::model::default::CarsData.all()\
+            ->project(~[K: z|$z.cylinders])\
+            ->groupBy(~[K], ~'v': w|$w.K : y|$y->sum())\
+            ->isEmpty())\
+        ->filter(r|$r.getInteger('Cyl') > 0)";
+    assert_streams_soundly_under_l2("car_1", query);
+}
+
+#[test]
+fn a_navigation_headed_arm_r_subquery_does_not_taint_the_outer_pipeline() {
+    // Soundness: the nested arm-R subquery is headed by a *navigation*
+    // (`$r.cylinders->groupBy(~[…])`) rather than `Class.all()`. Its `~[` still must
+    // not leak `saw_tilde_bracket`/`rel_explicit` to the enclosing arm-A pipeline —
+    // otherwise the later TDS binder `s` is misclassified as a relation row and the
+    // valid getter `$s.getInteger('Cyl')` is masked as a phantom column. Scoping the
+    // arm state to the lambda body (not just to `all()` entry) closes the leak.
+    let query = "|spider::car_1::model::default::CarsData.all()\
+        ->project([x|$x.cylinders], ['Cyl'])\
+        ->filter(r|$r.cylinders\
+            ->groupBy(~[K], ~'v': w|$w.K : y|$y->sum())\
+            ->isEmpty())\
+        ->filter(s|$s.getInteger('Cyl') > 0)";
+    assert_streams_soundly_under_l2("car_1", query);
+}
+
+#[test]
+fn a_shadowed_binder_is_restored_when_the_inner_arm_r_scope_closes() {
+    // Soundness: a nested arm-R subquery reuses the outer filter's binder name `x`
+    // and classifies it as a relation row; when that inner scope closes, `x` must be
+    // restored to the outer CarsData binding, so the outer `$x.cylinders` still
+    // narrows as an N1 member and is not masked as a phantom column against the inner
+    // relation's `{K, v}` universe. (Without binder-scope restoration, `cylinders`
+    // was masked here.)
+    let query = "|spider::car_1::model::default::CarsData.all()\
+        ->filter(x|spider::car_1::model::default::CarsData.all()\
+            ->project(~[K: z|$z.cylinders])\
+            ->groupBy(~[K], ~'v': x|$x.K : y|$y->sum())\
+            ->isEmpty() && $x.cylinders > 0)";
+    assert_streams_soundly_under_l2("car_1", query);
+}
+
 /// Drive `prefix` (a valid partial query) through a schema-aware session for
 /// `db_id`, then report, for each token in `probes`, whether it is admissible at
 /// the resulting position. `probes` tokens are injected into the vocabulary so
@@ -143,6 +238,20 @@ fn arm_r_groupby_map_lambda_binder_does_not_mask_a_projected_column() {
         "L2 SOUNDNESS: the projected column `Cyl` was masked at the groupBy map \
          lambda's member position in car_1:\n  {prefix}"
     );
+}
+
+#[test]
+fn arm_r_groupby_map_lambda_binder_masks_a_phantom_column() {
+    // The precision upgrade: on an arm-R relation-row binder, `$x.<Col>` is a
+    // bare-ident column access narrowed against the emitted-column universe. The
+    // real projected column `Cyl` streams (soundness); a name that no `~`-construct
+    // emitted is a phantom and is masked (precision) — end-to-end through the
+    // shipped grammar + scope + narrower.
+    let prefix = "|spider::car_1::model::default::CarsData.all()\
+        ->filter(x|$x.cylinders >= 0)\
+        ->project(~[Cyl: x|$x.cylinders])\
+        ->groupBy(~[Cyl], ~'Total': x|$x.";
+    assert_precision("car_1", prefix, b"Cyl", b"Zzz");
 }
 
 #[test]
