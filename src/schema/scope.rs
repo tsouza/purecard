@@ -194,6 +194,27 @@ struct Pending {
     pos: L2Position,
 }
 
+/// A lambda binder's shadowed prior `var_class` binding, saved at its `|` and
+/// restored when the enclosing delimiter closes (§6.4 lexical scoping), so a
+/// lambda scope cannot leak its binder into an outer scope that reuses the name.
+#[derive(Debug, Clone)]
+struct BinderSave {
+    depth: u32,
+    name: String,
+    prev_class: Option<Option<String>>,
+}
+
+/// The enclosing pipeline's class, snapshotted at a lambda body's binder pipe and
+/// restored when the body's delimiter closes (§6.4 lexical scoping). A lambda body
+/// is the one lexical region where a nested pipeline (`Class.all()`) can appear;
+/// restoring on close stops that subquery's source class from leaking out and
+/// re-classifying an outer binder or navigation.
+#[derive(Debug, Clone)]
+struct ScopeSave {
+    depth: u32,
+    prev_cur_class: Option<String>,
+}
+
 /// The §6.4 scope machine, advanced in lockstep with the byte-PDA.
 ///
 /// It holds the pipeline element class, the lambda variable bindings, the
@@ -243,6 +264,15 @@ pub(crate) struct ScopeTracker {
     last_ident: Option<String>,
     /// Have we passed a *closed* establishing op (a named relation exists)?
     rel_explicit: bool,
+    /// The binding a lambda binder shadowed, restored when its enclosing delimiter
+    /// closes — so a lambda scope cannot leak its binder into an outer scope reusing
+    /// the name.
+    binder_saves: Vec<BinderSave>,
+    /// The enclosing pipeline's class at each open lambda body, saved at the binder
+    /// pipe and restored when the body's delimiter closes — so a nested `Class.all()`
+    /// subquery inside the body cannot leak its source class out to re-classify an
+    /// outer binder or navigation.
+    scope_saves: Vec<ScopeSave>,
     /// Every string literal emitted so far — the N6 legal column set (a superset,
     /// so a real reference to a previously-emitted name is never masked). Stored as
     /// raw bytes, byte-exact against the trie's `quote` key.
@@ -578,9 +608,24 @@ impl ScopeTracker {
         if matches!(pre_state, State::Start | State::ExpectSource) {
             return;
         }
+        // Snapshot the enclosing pipeline's class as the lambda body begins — before a
+        // nested `Class.all()` in the body can overwrite `cur_class` — so the body's
+        // delimiter close restores it and the nested source class cannot leak out.
+        self.scope_saves.push(ScopeSave {
+            depth: self.depth,
+            prev_cur_class: self.cur_class.clone(),
+        });
         if let Some(name) = self.lambda_first_ident.take()
             && !name.is_empty()
         {
+            // Save the binding this lambda shadows, so the enclosing delimiter's close
+            // restores it and the binder cannot leak into an outer scope reusing the
+            // name.
+            self.binder_saves.push(BinderSave {
+                depth: self.depth,
+                name: name.clone(),
+                prev_class: self.var_class.get(&name).cloned(),
+            });
             let receiver = self.paren_receiver.last().cloned().flatten();
             self.var_class.insert(name, receiver);
         }
@@ -606,6 +651,41 @@ impl ScopeTracker {
     }
 
     fn on_close(&mut self) {
+        // Restore every binder introduced at the closing delimiter's depth to what it
+        // shadowed, so a lambda's binder never outlives its scope (§6.4). Deeper
+        // scopes have already restored and popped, so the depth-matching saves are
+        // contiguous at the top of the stack.
+        while self
+            .binder_saves
+            .last()
+            .is_some_and(|save| save.depth == self.depth)
+        {
+            let Some(save) = self.binder_saves.pop() else {
+                break;
+            };
+            match save.prev_class {
+                Some(class) => {
+                    self.var_class.insert(save.name, class);
+                }
+                None => {
+                    self.var_class.remove(&save.name);
+                }
+            }
+        }
+        // Restore the enclosing pipeline's class for lambda bodies closing here, so a
+        // nested subquery's source class does not leak past its scope. This runs
+        // *before* the establishing-op block below, which then re-clears `cur_class`
+        // to `None` when this delimiter is a `project`/`groupBy` (relation → TDS row).
+        while self
+            .scope_saves
+            .last()
+            .is_some_and(|save| save.depth == self.depth)
+        {
+            let Some(save) = self.scope_saves.pop() else {
+                break;
+            };
+            self.cur_class = save.prev_cur_class;
+        }
         if self.ref_stack.last() == Some(&self.depth) {
             self.ref_stack.pop();
         }
@@ -702,6 +782,9 @@ mod tests {
         "A": { "simple_name": "A", "properties": [
           {"name": "n", "type": {"kind": "primitive", "name": "Integer"}, "mult": {"lower": 1, "upper": 1}},
           {"name": "s", "type": {"kind": "primitive", "name": "String"}, "mult": {"lower": 0, "upper": 1}}
+        ] },
+        "B": { "simple_name": "B", "properties": [
+          {"name": "m", "type": {"kind": "primitive", "name": "Integer"}, "mult": {"lower": 1, "upper": 1}}
         ] } },
       "associations": [], "enums": {}
     }"#;
@@ -812,6 +895,47 @@ mod tests {
         let (tracker, pda) = run(&[b"|", b"A", b"."]);
         assert_eq!(pda.state(), State::AfterDot);
         assert_eq!(tracker.position(pda.state()), L2Position::None);
+    }
+
+    #[test]
+    fn a_nested_pipeline_source_class_does_not_leak_to_an_outer_navigation() {
+        // Soundness: an outer `A` pipeline whose filter predicate is a *nested* `B`
+        // subquery. The nested `B.all()` sets `cur_class` to B; scoping must restore
+        // the outer `A` when the filter closes, so the outer `map(z|$z.` navigation is
+        // narrowed against A (which has member `n`), not the leaked B. Without the
+        // per-scope `cur_class` restore, `$z.n` was masked (B has no `n`).
+        // `|A.all()->filter(x|B.all()->isEmpty())->map(z|$z.`
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"B", b".",
+            b"all", b"(", b")", b"->", b"isEmpty", b"(", b")", b")", b"->", b"map", b"(", b"z",
+            b"|", b"$", b"z", b".",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::AfterDot);
+        assert_eq!(
+            tracker.position(pda.state()),
+            L2Position::Member("A".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_shadowed_binder_is_restored_when_the_inner_scope_closes() {
+        // Soundness: a nested `B` subquery reuses the outer filter's binder name `x`
+        // and rebinds it to B. When that inner lambda closes, `x` must be restored to
+        // the outer `A` binding, so the outer `$x.n` (valid on A) is not masked
+        // against B. Without binder-scope restoration, `$x.n` was masked.
+        // `|A.all()->filter(x|B.all()->map(x|$x.m)->isEmpty() && $x.`
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"B", b".",
+            b"all", b"(", b")", b"->", b"map", b"(", b"x", b"|", b"$", b"x", b".", b"m", b")",
+            b"->", b"isEmpty", b"(", b")", b"&&", b"$", b"x", b".",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::AfterDot);
+        assert_eq!(
+            tracker.position(pda.state()),
+            L2Position::Member("A".to_owned())
+        );
     }
 
     #[test]
