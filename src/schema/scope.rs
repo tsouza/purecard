@@ -505,6 +505,18 @@ impl ScopeTracker {
             State::ExpectValue | State::ExpectValueReq => {
                 self.lambda_first_ident = Some(text.to_owned());
             }
+            // The arm-R map lambda binds its variable *after* a colon
+            // (`~[Col: x|…]`, `~'Name': x|…`), which the byte-PDA parks in an
+            // `InIdent` reached from `AfterColon`/`AfterColonWs`, not a value state.
+            // Recording it rebinds the binder at the following `|` — without this a
+            // re-used name keeps whatever class an earlier `filter(x|…)` lambda bound
+            // it to, and N1 unsoundly masks a projected column. A *class-named*
+            // identifier here is instead the type of a typed binder
+            // (`row: Person[1]|…`), whose true binder precedes the colon; leaving the
+            // pre-colon candidate in place keeps that narrowing intact.
+            State::AfterColon | State::AfterColonWs if !schema.has_class(text) => {
+                self.lambda_first_ident = Some(text.to_owned());
+            }
             _ => {}
         }
         self.last_ident = Some(text.to_owned());
@@ -970,6 +982,68 @@ mod tests {
         // content: the "look at the *next* byte" check must not read the current one.
         assert_eq!(classify(b"''''"), Lexeme::Str(b"'".to_vec()));
         assert_eq!(classify(b"''x'"), Lexeme::Str(b"'x".to_vec()));
+    }
+
+    #[test]
+    fn an_arm_r_map_lambda_binder_rebinds_after_a_preceding_filter() {
+        // Soundness regression (gap report G-L2): the arm-R aggregation map lambda
+        // binds its variable *after* a colon (`~'s': x|…`), which the byte-PDA parks
+        // in an `InIdent` reached from `AfterColon`/`AfterColonWs` rather than a value
+        // state. If that binder is not re-captured, a re-used name keeps whatever
+        // class a preceding `filter(x|…)` lambda bound it to, and N1 unsoundly masks
+        // the projected column `$x.C` (A has no member `C`).
+        //
+        // `|A.all()->filter(x|$x.n>=0)->project(~[C: x|$x.n])->groupBy(~[C], ~'s': x|$x.`
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"$", b"x",
+            b".", b"n", b">=", b"0", b")", b"->", b"project", b"(", b"~", b"[", b"C", b":", b"x",
+            b"|", b"$", b"x", b".", b"n", b"]", b")", b"->", b"groupBy", b"(", b"~", b"[", b"C",
+            b"]", b",", b"~", b"'s'", b":", b"x", b"|", b"$", b"x", b".",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::AfterDot, "at the `$x.` member position");
+        // The groupBy binder `x` rebound to the (post-project) relation row — unknown
+        // class — so the column position degrades to pass-through, never a mask of a
+        // real projected column.
+        assert_eq!(tracker.position(pda.state()), L2Position::None);
+    }
+
+    #[test]
+    fn a_typed_value_binder_keeps_its_pre_colon_binding() {
+        // The dual concern of the arm-R capture: a *typed* value-position binder
+        // (`filter(row: A|$row.…)`) names its binder *before* the colon and its class
+        // *after* it. The post-colon `A` is a schema class, so it must not be
+        // mistaken for the binder — `row` stays bound to `A` and N1 still narrows
+        // `$row.n`. Without the `has_class` guard the type name would overwrite the
+        // binder and this position would degrade to a pass-through.
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"row", b":", b"A", b"|",
+            b"$", b"row", b".",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::AfterDot);
+        assert_eq!(
+            tracker.position(pda.state()),
+            L2Position::Member("A".to_owned())
+        );
+    }
+
+    #[test]
+    fn an_arm_r_project_map_lambda_binder_binds_to_the_source_class() {
+        // The dual of the soundness test: inside `project(~[C: x|$x.` the binder `x`
+        // *is* a row of the source relation, so it must bind to the source class `A`
+        // (N1 narrows `$x.n` against A) — the rebinding fix must not degrade this
+        // still-typed position to pass-through.
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"project", b"(", b"~", b"[", b"C", b":",
+            b"x", b"|", b"$", b"x", b".",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::AfterDot);
+        assert_eq!(
+            tracker.position(pda.state()),
+            L2Position::Member("A".to_owned())
+        );
     }
 
     #[test]

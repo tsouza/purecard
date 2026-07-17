@@ -124,6 +124,40 @@ fn n6_masks_an_unemitted_relation_column() {
 }
 
 #[test]
+fn arm_r_groupby_map_lambda_binder_does_not_mask_a_projected_column() {
+    // Soundness regression (L2 gap report): the arm-R aggregation map lambda binds
+    // its variable after a colon (`~'Total': x|$x.Cyl`). A preceding `filter(x|…)`
+    // bound `x` to the source class; without re-binding at the groupBy map lambda's
+    // `|`, `$x.Cyl` was narrowed to CarsData members and the projected column `Cyl`
+    // (not a CarsData property) was masked — a real token the model emits.
+    //
+    // End-to-end through the shipped grammar + scope + narrower: the binder now
+    // degrades to the post-project relation row, so `Cyl` streams unmasked.
+    let prefix = "|spider::car_1::model::default::CarsData.all()\
+        ->filter(x|$x.cylinders >= 0)\
+        ->project(~[Cyl: x|$x.cylinders])\
+        ->groupBy(~[Cyl], ~'Total': x|$x.";
+    let verdicts = admissible_after("car_1", prefix, &[b"Cyl"]);
+    assert!(
+        verdicts[0],
+        "L2 SOUNDNESS: the projected column `Cyl` was masked at the groupBy map \
+         lambda's member position in car_1:\n  {prefix}"
+    );
+}
+
+#[test]
+fn arm_r_project_map_lambda_binder_stays_narrowed_to_the_source() {
+    // The dual: inside `project(~[Cyl: x|$x.` the binder `x` is a row of the source
+    // relation, so N1 must still narrow `$x.<prop>` against CarsData — the rebinding
+    // fix must not degrade this still-typed position to pass-through. A preceding
+    // filter (the exact trigger of the soundness bug) must not perturb it.
+    let prefix = "|spider::car_1::model::default::CarsData.all()\
+        ->filter(x|$x.cylinders >= 0)\
+        ->project(~[Cyl: x|$x.";
+    assert_precision("car_1", prefix, b"cylinders", b"sallary");
+}
+
+#[test]
 fn precision_generalizes_to_oos_held_out_schemas() {
     // world_1: Country is a real class; a phantom is masked at the source, and a
     // phantom property is masked after a bound var — on a schema no rule was
