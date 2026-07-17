@@ -67,9 +67,13 @@ counts it). `cargo-semver-checks` passes (additive). No PyO3 signature change.
 - **Unit** (`pda.rs`): `SawTilde` in `ALL_STATES`/`index`/`lexeme_kind==None`;
   direct `step` branches; accept every §4.1 seed shape; reject `~)`, `~ [`, `~~`,
   `~` in source position.
-- **Soundness** (`modern_dialect_soundness.rs`): 11 arm-R seeds replay green and
-  classify `RelationApi`; `SEED_ARM_R = 11`. The 5,034 gold partition is unchanged
-  and asserts no gold classifies as arm-R.
+- **Soundness** (`modern_dialect_soundness.rs`): this feature shipped 11 arm-R
+  seeds, replaying green and classifying `RelationApi` (`SEED_ARM_R = 11` at the
+  time). The current count lives in the sources that own it — the `SEED_ARM_R`
+  constant in `tests/modern_dialect_soundness.rs` and the seed records in
+  `corpus/modern_dialect_seeds.jsonl` (later additions grow both); this spec is
+  not updated per later seed. The 5,034 gold partition is unchanged and asserts no
+  gold classifies as arm-R.
 - **Classifier** (`grammar/mod.rs` unit): a `~` query classifies `RelationApi`.
 - **Precision** (`precision_reject.rs`): the `~`-sigil boundary rejects.
 - **L2** (`scope.rs` unit): a `~`-column (`~A`, `~[Col: …]`) is `L2Position::None`.
