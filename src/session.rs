@@ -119,6 +119,14 @@ impl<'g> DecoderSession<'g> {
     /// non-dead (§4.4), with the reserved EOS bit set iff
     /// [`is_complete`](DecoderSession::is_complete).
     ///
+    /// **This is the sole point that enforces the shipped L2 rules** (§6.7 —
+    /// N1/N2/N3/N6/T1; deferred rules pass through). Under an active [`Schema`] the
+    /// syntactic (L1) mask is intersected with that schema-legal set (§6), so a
+    /// token illegal under a shipped rule is cleared here.
+    /// [`accept_token`](DecoderSession::accept_token) does *not* re-apply that
+    /// narrow — the mask-first contract is that the host samples only from this set,
+    /// then commits. When no schema is set, this is the L1 mask alone.
+    ///
     /// Cost is one word-wise copy of the state's cached context-independent mask
     /// plus a re-probe of the small deferred (stack-dependent) token set against
     /// the live stack — the per-step performance core (§4.3). It fills the
@@ -187,12 +195,23 @@ impl<'g> DecoderSession<'g> {
     /// equivalent to folding [`accept_byte`](ByteRecognizer::accept_byte) over
     /// `vocab.bytes(id)`.
     ///
+    /// **L1-only admission (mask-first contract).** This rejects a token only when
+    /// its bytes dead-end the **byte-PDA** (the L1 grammar). It does *not* re-apply
+    /// the L2 schema narrow: a token that is grammar-legal but schema-masked (absent
+    /// from [`allowed_mask`](DecoderSession::allowed_mask) under an active [`Schema`])
+    /// is still accepted. `allowed_mask` is the sole point that enforces the shipped
+    /// L2 rules (§6.7) — the host samples only from the masked set, then commits with
+    /// `accept_token`. Do not treat `accept_token` as a schema-validation backstop;
+    /// accepting an unmasked token yields schema-invalid output. (The L2 tracker
+    /// still advances in lockstep so the *next* mask is correct.)
+    ///
     /// # Errors
     /// Returns [`DecodeError::UnexpectedEos`] if EOS is signalled before the
     /// stream is complete, [`DecodeError::UnknownToken`] if `id` is out of range
     /// (a host-contract violation — no `Vocab` entry), or
     /// [`DecodeError::InadmissibleToken`] if an in-range token's bytes dead-end
-    /// the recognizer (a legitimate, mask-respecting reject).
+    /// the recognizer (a **grammar**-respecting reject; the schema narrow is not
+    /// re-checked here — see the mask-first note above).
     pub fn accept_token(&mut self, id: u32) -> Result<(), DecodeError> {
         if id == self.grammar.eos_bit() {
             return if self.pda.is_accepting() {
@@ -296,12 +315,59 @@ mod tests {
     use crate::error::DecodeError;
     use crate::grammar::compiled::CompiledGrammar;
     use crate::recognizer::ByteRecognizer;
+    use crate::schema::Schema;
     use crate::vocab::Vocab;
 
     /// An L1-only grammar over an empty vocabulary — enough to drive the
     /// byte-recognizer surface, which does not consult the vocab.
     fn l1_grammar() -> CompiledGrammar {
         CompiledGrammar::compile(Vocab::from_byte_tokens(Vec::new(), 0))
+    }
+
+    /// A byte-token grammar: one single-byte token per value, so token id == byte.
+    /// The EOS bit is one past the last byte. Lets a test drive the token surface
+    /// (`accept_token`/`allowed_mask`) byte-by-byte under a schema.
+    fn byte_grammar() -> CompiledGrammar {
+        let tokens: Vec<Vec<u8>> = (0..=u8::MAX).map(|b| vec![b]).collect();
+        let eos = tokens.len() as u32;
+        CompiledGrammar::compile(Vocab::from_byte_tokens(tokens, eos))
+    }
+
+    #[test]
+    fn accept_token_enforces_only_l1_not_the_l2_schema_mask() {
+        // Mask-first contract (GAP 2): with a schema active, `allowed_mask` is the
+        // sole L2 enforcement point; `accept_token` checks only the grammar. Drive to
+        // `$x.` on a class with member `n` (no member `z`), then at the member
+        // position: `z` is schema-masked (not a member) yet grammar-legal, so
+        // `accept_token('z')` still succeeds — proving accept is not a schema backstop.
+        const SCHEMA: &str = r#"{"db_id":"d","db_path":"demo::Db","classes":{
+            "demo::Reading":{"simple_name":"Reading","properties":[
+              {"name":"n","type":{"kind":"primitive","name":"Integer"},"mult":{"lower":1,"upper":1}}]}},
+            "associations":[]}"#;
+        let grammar = byte_grammar();
+        let schema = Schema::from_json(SCHEMA).expect("schema parses");
+        let mut session = DecoderSession::with_schema(&grammar, schema);
+        for &byte in b"|demo::Reading.all()->filter(x|$x." {
+            session
+                .accept_token(u32::from(byte))
+                .expect("prefix byte is grammar- and schema-legal");
+        }
+        let z = u32::from(b'z');
+        // `z` is grammar-legal (an identifier byte) but schema-masked: the L2 narrow
+        // clears it because the class has no member starting `z`.
+        assert!(
+            session.allowed_mask().test(u32::from(b'n')),
+            "the real member byte `n` is admissible",
+        );
+        assert!(
+            !session.allowed_mask().test(z),
+            "`z` is schema-masked at the member position (no member `z`)",
+        );
+        // Yet `accept_token` admits it — L1-only, mask-first contract.
+        assert!(
+            session.accept_token(z).is_ok(),
+            "accept_token enforces only the grammar, not the schema mask",
+        );
     }
 
     fn drive(text: &str) -> (Result<(), DecodeError>, bool, usize) {
