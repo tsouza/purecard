@@ -1014,6 +1014,27 @@ mod tests {
     }
 
     #[test]
+    fn a_shadowed_binder_is_restored_when_the_inner_scope_closes() {
+        // Soundness (unit-level dual of the arm-R integration test in
+        // `tests/l2_precision.rs`): a nested `B` subquery reuses the outer filter's
+        // binder name `x` and rebinds it to B. When that inner lambda closes, `x` must
+        // be restored to the outer `A` binding, so the outer `$x.n` (valid on A) is
+        // not masked against B. Without binder-scope restoration, `$x.n` was masked.
+        // `|A.all()->filter(x|B.all()->map(x|$x.m)->isEmpty() && $x.`
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"B", b".",
+            b"all", b"(", b")", b"->", b"map", b"(", b"x", b"|", b"$", b"x", b".", b"m", b")",
+            b"->", b"isEmpty", b"(", b")", b"&&", b"$", b"x", b".",
+        ];
+        let (tracker, pda) = run(tokens);
+        assert_eq!(pda.state(), State::AfterDot);
+        assert_eq!(
+            tracker.position(pda.state()),
+            L2Position::Member("A".to_owned())
+        );
+    }
+
+    #[test]
     fn a_nested_pipeline_source_class_does_not_leak_to_an_outer_navigation() {
         // Soundness: an outer `A` pipeline whose filter predicate is a *nested* `B`
         // subquery. The nested `B.all()` sets `cur_class` to B; scoping must restore
