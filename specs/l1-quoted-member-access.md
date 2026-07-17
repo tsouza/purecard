@@ -12,9 +12,9 @@ identifiers (spaces, reserved words, punctuation). The L1 byte-PDA's `AfterDot`
 state accepts only an identifier-start byte, so a `'` there is a dead state: every
 query navigating a quoted column dead-states at the `'`.
 
-This blocks the arm-R nested-subquery shapes contributed for the soundness corpus
-(they use `$x.'Cnt'`, `$r.'ClientGC'`), and is a genuine gap versus the engine
-grammar (`grammarToJson/lambda` PARSE_OK for `.'name'`; gap report response 4).
+`.'name'` is legal Legend Pure, so this is a genuine L1 gap; it also blocks the
+arm-R nested-subquery shapes for the soundness corpus (they use `$x.'Cnt'`,
+`$r.'ClientGC'`).
 
 ## Goals
 
@@ -23,8 +23,8 @@ grammar (`grammarToJson/lambda` PARSE_OK for `.'name'`; gap report response 4).
       `InStrLit` production, including `''` quote-doubling), and returns to a
       completed-value position so normal continuations (`->`, comparison,
       further `.`) follow.
-- [ ] Land the three contributed nested-subquery shapes (`real_domain_11/12/20`)
-      in the modern-dialect soundness corpus, now that they parse.
+- [ ] Land three arm-R nested-subquery shapes in the modern-dialect soundness
+      corpus, now that they parse.
 
 ## Non-goals
 
@@ -37,8 +37,8 @@ grammar (`grammarToJson/lambda` PARSE_OK for `.'name'`; gap report response 4).
 
 ## Design
 
-Oracle-driven from the engine-verified must-parse/must-reject set (response 4).
-Byte-PDA changes in `src/grammar/pda.rs`:
+Oracle-driven from a must-parse/must-reject set (`.'name'` is legal Legend Pure;
+the `['name']` bracket form is not). Byte-PDA changes in `src/grammar/pda.rs`:
 
 - `State::AfterDot` (a *value-navigation* dot) gains
   `b'\'' => Step::Next(State::InStrLit { escaped: false })`.
@@ -79,7 +79,7 @@ None. L1 grammar only; no L2 rule, no public-API or PyO3 change.
 - **Soundness (`tests/modern_dialect_soundness.rs`)**: the must-parse set streams
   to `is_complete` — `$x.'Cnt'`, a name with spaces (`'Gross Credits'`), a doubled
   quote (`'a''b'`), a ref to an arm-R column, inside a brace window frame, and a
-  chained `->toOne()` — plus the three contributed nested-subquery shapes added to
+  chained `->toOne()` — plus the three arm-R nested-subquery shapes added to
   `corpus/modern_dialect_seeds.jsonl` (arm-R, `db_id` "modern").
 - **Precision**: `$x['Cnt']` is *not* newly rejected here (documented non-goal),
   but the plain `.'`-without-a-closing-quote boundary (`$x.'` then EOS) must not be
