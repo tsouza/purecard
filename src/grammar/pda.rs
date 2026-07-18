@@ -134,15 +134,24 @@ pub enum State {
     /// Inside an identifier or classpath segment (`[A-Za-z_][A-Za-z0-9_]*`).
     InIdent,
     /// Just consumed the `-` sign of a numeric literal in value position; a digit
-    /// must follow, so a bare `-`, `--5`, or `-.5` is a dead state.
+    /// must follow (a digit for `-5`, or a `.` for the leading-dot float `-.5`), so
+    /// a bare `-` or `--5` is a dead state.
     SawNumSign,
     /// Inside the integer part of a number literal.
     InNumberInt,
-    /// Just consumed the `.` of a number literal; at least one fractional digit
-    /// must follow, so a trailing `1.` is a dead state.
+    /// Just consumed the `.` of a number literal (or a leading `.`); at least one
+    /// fractional digit must follow, so a trailing `1.` or a bare `.` is a dead state.
     NeedFracDigit,
-    /// Inside the fractional part of a number literal, after the `.`.
+    /// Inside the fractional part of a number literal, after the `.`. An `e`/`E`
+    /// here opens a scientific-notation exponent.
     InNumberFrac,
+    /// Just consumed the `e`/`E` of an exponent; an optional sign then a digit
+    /// follow (`1.5e3`, `1.5e-3`).
+    SawExp,
+    /// An exponent sign (`+`/`-`) was seen; a digit is required.
+    NeedExpDigit,
+    /// Inside the digits of a scientific-notation exponent.
+    InExp,
     /// Inside a single-quoted string literal.
     ///
     /// `escaped` is `true` when the previous byte was a `'` whose role — closing
@@ -235,6 +244,9 @@ impl State {
             State::InNumberInt => "InNumberInt",
             State::NeedFracDigit => "NeedFracDigit",
             State::InNumberFrac => "InNumberFrac",
+            State::SawExp => "SawExp",
+            State::NeedExpDigit => "NeedExpDigit",
+            State::InExp => "InExp",
             State::InStrLit { escaped: false } => "InStrLit",
             State::InStrLit { escaped: true } => "InStrLit(pendingQuote)",
             State::SawPercent => "SawPercent",
@@ -312,13 +324,16 @@ impl State {
             State::SawAmp => 41,
             State::InMilestoneLit => 42,
             State::SawTilde => 43,
+            State::SawExp => 44,
+            State::NeedExpDigit => 45,
+            State::InExp => 46,
         }
     }
 
     /// The number of distinct automaton states — the length a per-state cache
     /// (`Vec<_>` keyed by [`index`](State::index)) must have. One more than the
     /// largest [`index`](State::index).
-    pub const COUNT: usize = 44;
+    pub const COUNT: usize = 47;
 
     /// The lexeme class this state is *inside*, if any (`None` = an inter-lexeme
     /// or structural position).
@@ -336,9 +351,13 @@ impl State {
             | State::InBinder
             | State::SourceColon
             | State::SourceColon2 => Some(LexKind::Ident),
-            State::SawNumSign | State::InNumberInt | State::NeedFracDigit | State::InNumberFrac => {
-                Some(LexKind::Number)
-            }
+            State::SawNumSign
+            | State::InNumberInt
+            | State::NeedFracDigit
+            | State::InNumberFrac
+            | State::SawExp
+            | State::NeedExpDigit
+            | State::InExp => Some(LexKind::Number),
             State::SawPercent | State::InDateLit | State::InMilestoneLit => Some(LexKind::Date),
             State::InStrLit { .. } => Some(LexKind::Str),
             _ => None,
@@ -493,6 +512,9 @@ fn value_position(stack_top: Option<Frame>, byte: u8, allow_close: bool) -> Step
         b if is_ident_start(b) => Step::Next(State::InIdent),
         b if b.is_ascii_digit() => Step::Next(State::InNumberInt),
         b'-' => Step::Next(State::SawNumSign),
+        // A leading `.` opens a fractional float (`.5`); at least one fractional
+        // digit is then required (`.` alone dies), matching the engine's `.5` float.
+        b'.' => Step::Next(State::NeedFracDigit),
         b'\'' => Step::Next(State::InStrLit { escaped: false }),
         b'%' => Step::Next(State::SawPercent),
         b'$' => Step::Next(State::AfterDollar),
@@ -751,6 +773,9 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
         State::SawNumSign => {
             if byte.is_ascii_digit() {
                 Step::Next(State::InNumberInt)
+            } else if byte == b'.' {
+                // A signed leading-dot float (`-.5`).
+                Step::Next(State::NeedFracDigit)
             } else {
                 Step::Dead
             }
@@ -772,9 +797,35 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
             }
         }
 
-        State::InNumberFrac => {
+        State::InNumberFrac => match byte {
+            b if b.is_ascii_digit() => Step::Next(State::InNumberFrac),
+            // Scientific notation: an exponent is only legal *after* a fractional
+            // part (`1.5e3`), never after a bare integer (`1e3`, which the engine
+            // reads as an element reference, not a number).
+            b'e' | b'E' => Step::Next(State::SawExp),
+            _ => step(State::AfterValue, stack_top, byte),
+        },
+
+        // Just consumed the `e`/`E` of an exponent: an optional sign, then at least
+        // one digit is required (`1.5e` / `1.5e+` die).
+        State::SawExp => match byte {
+            b'+' | b'-' => Step::Next(State::NeedExpDigit),
+            b if b.is_ascii_digit() => Step::Next(State::InExp),
+            _ => Step::Dead,
+        },
+
+        // An exponent sign was seen; a digit is required.
+        State::NeedExpDigit => {
             if byte.is_ascii_digit() {
-                Step::Next(State::InNumberFrac)
+                Step::Next(State::InExp)
+            } else {
+                Step::Dead
+            }
+        }
+
+        State::InExp => {
+            if byte.is_ascii_digit() {
+                Step::Next(State::InExp)
             } else {
                 step(State::AfterValue, stack_top, byte)
             }
@@ -812,7 +863,11 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
         }
 
         State::InDateLit => {
-            if is_date_char(byte) {
+            // A `.` inside a date literal is the fractional-seconds separator
+            // (`%2020-01-01T10:00:00.000`). Kept out of `is_date_char` so `%.` at the
+            // sigil is still a dead state; admitted only once a date run is underway,
+            // matching the existing flat-run over-approximation of date syntax.
+            if is_date_char(byte) || byte == b'.' {
                 Step::Next(State::InDateLit)
             } else {
                 step(State::AfterValue, stack_top, byte)
@@ -1247,6 +1302,9 @@ mod tests {
         State::InNumberInt,
         State::NeedFracDigit,
         State::InNumberFrac,
+        State::SawExp,
+        State::NeedExpDigit,
+        State::InExp,
         State::InStrLit { escaped: false },
         State::InStrLit { escaped: true },
         State::SawPercent,
@@ -1554,11 +1612,34 @@ mod tests {
         assert!(dies("|X.all()->take(-)"));
         assert!(dies("|X.all()->take(1.)"));
         assert!(dies("|X.all()->take(--5)"));
-        assert!(dies("|X.all()->take(-.5)"));
         assert!(dies("|X.all()->take(%)"));
+        // A bare `.` / a `.` with no fractional digit dies; an exponent needs a digit.
+        assert!(dies("|X.all()->filter(x|$x.v > .)"));
+        assert!(dies("|X.all()->filter(x|$x.v > 1.5e)"));
+        assert!(dies("|X.all()->filter(x|$x.v > 1.5e+)"));
         // …well-formed literals still stream.
         assert!(accepts("|X.all()->take(-5)"));
         assert!(accepts("|X.all()->filter(x|$x.v > 1.5)"));
+    }
+
+    #[test]
+    fn extended_numeric_and_date_literals_stream() {
+        // Engine-verified (Legend 4.113.0) legal literal forms the byte-PDA now
+        // admits: leading-dot floats, scientific notation (decimal-point required),
+        // and datetime fractional seconds.
+        assert!(accepts("|X.all()->filter(x|$x.v > .5)"));
+        assert!(accepts("|X.all()->filter(x|$x.v > -.5)"));
+        assert!(accepts("|X.all()->filter(x|$x.v == 1.5e3)"));
+        assert!(accepts("|X.all()->filter(x|$x.v == 1.5e-3)"));
+        assert!(accepts("|X.all()->filter(x|$x.v == 1.5e+3)"));
+        assert!(accepts("|X.all()->filter(x|$x.v == 1.5E3)"));
+        assert!(accepts(
+            "|X.all()->filter(x|$x.t == %2020-01-01T10:00:00.000)"
+        ));
+        // The engine reads a bare-integer exponent (`1e3`) as an element reference,
+        // not a number, so the byte-PDA does NOT admit it as a numeric literal — an
+        // exponent is only legal after a fractional part.
+        assert!(dies("|X.all()->filter(x|$x.v == 1e3)"));
     }
 
     #[test]

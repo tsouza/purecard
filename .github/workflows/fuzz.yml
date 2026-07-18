@@ -75,7 +75,13 @@ jobs:
       # Nightly is the one channel rust-toolchain.toml (stable) does not provide,
       # scoped to this job only (constitution §1-sanctioned).
       - name: Install nightly toolchain
-        uses: dtolnay/rust-toolchain@efcb852328a9f50117170cc43094fb6f09eaf1ae # nightly
+        # Pin the action to its append-only default branch (master) and select the
+        # channel via `toolchain:`. Pinning the force-pushed `nightly` channel head
+        # rots: the commit is orphaned on the next nightly and reads as an
+        # impostor-commit to the zizmor gate.
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: nightly
       - name: Cache Rust build
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:

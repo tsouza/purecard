@@ -92,8 +92,12 @@ fn malformed_numeric_literals_die() {
     assert!(dies("|X.all()->take(-)"));
     assert!(dies("|X.all()->take(1.)"));
     assert!(dies("|X.all()->take(--5)"));
-    assert!(dies("|X.all()->take(-.5)"));
-    assert!(dies("|X.all()->filter(x|$x.a > .5)"));
+    // A bare `.` with no fractional digit, and an exponent with no digit, still die.
+    assert!(dies("|X.all()->filter(x|$x.a > .)"));
+    assert!(dies("|X.all()->filter(x|$x.a > 1.5e)"));
+    // NB: `-.5` (leading-dot float) and `.5` are engine-legal literals (Legend
+    // 4.113.0), so they are admitted, not rejected — see
+    // `pda::tests::extended_numeric_and_date_literals_stream`.
 }
 
 /// A date literal must carry at least one date character (finding F).

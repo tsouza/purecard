@@ -759,6 +759,15 @@ const MODULE_TREE_HEADING: &str = "### 3.2 Crate layout";
 /// The crate root file, shown as the tree's root node rather than a leaf module,
 /// so it is excluded from the module-name comparison.
 const CRATE_ROOT_STEM: &str = "lib";
+/// The differential labeler, whose `PINNED_ENGINE_VERSION` is the single source of
+/// truth for the Legend engine the grammar targets. The published grammar doc must
+/// cite that exact version, so a re-pin cannot relabel the corpus against one
+/// engine while the spec documents another.
+const LABELER_SRC: &str = "scripts/label-differential.mjs";
+/// The JS `const` in [`LABELER_SRC`] holding the targeted Legend engine version.
+const ENGINE_PIN_CONST: &str = "PINNED_ENGINE_VERSION";
+/// The grammar spec whose Legend-version prose must match the labeler's pin.
+const GRAMMAR_DOC: &str = "docs/spec/grammar.md";
 
 /// Assert every discrete doc fact agrees with its single source (see module note
 /// above). Collects *all* violations before failing, so one run reports the full
@@ -875,6 +884,20 @@ pub fn check_doc_facts() -> Result<()> {
         }
     }
 
+    // Fact 5 — Legend engine version pin. SoT: the labeler's PINNED_ENGINE_VERSION,
+    // the value it asserts the running engine against before freezing verdicts. The
+    // grammar spec's published target must name that exact version, so a re-pin can't
+    // relabel the corpus against one engine while the doc documents another.
+    let engine_pin = read_js_str_const(LABELER_SRC, ENGINE_PIN_CONST)?;
+    let grammar_doc =
+        std::fs::read_to_string(GRAMMAR_DOC).with_context(|| format!("reading {GRAMMAR_DOC}"))?;
+    if !grammar_doc.contains(&engine_pin) {
+        errors.push(format!(
+            "{GRAMMAR_DOC} does not cite the Legend engine version {engine_pin} \
+             pinned by {LABELER_SRC} {ENGINE_PIN_CONST}"
+        ));
+    }
+
     if !errors.is_empty() {
         anyhow::bail!(
             "doc-fact drift — each cited fact must match its single source:\n{}",
@@ -921,6 +944,39 @@ fn parse_usize_const(content: &str, name: &str) -> Option<usize> {
             .collect();
         if let Ok(value) = digits.parse::<usize>() {
             return Some(value);
+        }
+    }
+    None
+}
+
+/// The string value of a `const <name> = "<value>";` declaration in the JS `src`.
+fn read_js_str_const(src: &str, name: &str) -> Result<String> {
+    let content = std::fs::read_to_string(src).with_context(|| format!("reading {src}"))?;
+    parse_js_str_const(&content, name).with_context(|| format!("no string `const {name}` in {src}"))
+}
+
+/// Parse the double-quoted value of a JS `const <name> = "<value>"` line. Returns
+/// `None` if the const is absent or its value is not a double-quoted string.
+fn parse_js_str_const(content: &str, name: &str) -> Option<String> {
+    for line in content.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("const ") else {
+            continue;
+        };
+        let Some(after_name) = rest.trim_start().strip_prefix(name) else {
+            continue;
+        };
+        // The char after the name must end the identifier (`=` or space), so
+        // `FOO` does not match `FOOBAR`.
+        let after = after_name.trim_start();
+        if !after.starts_with('=') {
+            continue;
+        }
+        let value = after[1..].trim_start();
+        let Some(inner) = value.strip_prefix('"') else {
+            continue;
+        };
+        if let Some(end) = inner.find('"') {
+            return Some(inner[..end].to_owned());
         }
     }
     None
@@ -1129,6 +1185,26 @@ fn parse_grouped(token: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_js_str_const_reads_a_quoted_value_and_rejects_prefix_names() {
+        assert_eq!(
+            parse_js_str_const(
+                "const PINNED_ENGINE_VERSION = \"4.113.0\";",
+                "PINNED_ENGINE_VERSION"
+            ),
+            Some("4.113.0".to_owned())
+        );
+        // A prefix name must not match, and a non-string value has nothing to read.
+        assert_eq!(
+            parse_js_str_const(
+                "const PINNED_ENGINE_VERSION_X = \"9\";",
+                "PINNED_ENGINE_VERSION"
+            ),
+            None
+        );
+        assert_eq!(parse_js_str_const("const N = 8000;", "N"), None);
+    }
 
     #[test]
     fn parse_usize_const_reads_a_literal_and_tolerates_separators() {
