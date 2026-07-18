@@ -28,12 +28,12 @@ use std::path::PathBuf;
 
 use tokenizers::Tokenizer;
 
-#[path = "support/bpe.rs"]
-mod bpe;
+#[path = "support/byte_decode.rs"]
+mod byte_decode;
 #[path = "support/fused_fixture.rs"]
 mod fused_fixture;
 
-use bpe::{gpt2_byte_decoder, true_bytes};
+use byte_decode::{gpt2_byte_decoder, true_bytes};
 use fused_fixture::{Expect, FusedCase};
 
 /// A real byte-level-BPE tokenizer the fixture is extracted from, with the immutable

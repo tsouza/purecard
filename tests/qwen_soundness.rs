@@ -22,6 +22,8 @@ use purecard::{CompiledGrammar, DecoderSession, Vocab};
 
 #[path = "support/bpe.rs"]
 mod bpe;
+#[path = "support/byte_decode.rs"]
+mod byte_decode;
 #[path = "support/corpus.rs"]
 mod corpus;
 #[path = "support/error.rs"]
@@ -33,7 +35,8 @@ mod l2;
 #[path = "support/lex.rs"]
 mod lex;
 
-use bpe::{gpt2_byte_decoder, replay_tokens, true_bytes};
+use bpe::replay_tokens;
+use byte_decode::{gpt2_byte_decoder, true_bytes};
 use corpus::load_gold;
 use fixture_dbs::FIXTURE_DBS;
 use l2::load_schema;

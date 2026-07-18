@@ -27,8 +27,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-#[path = "support/bpe.rs"]
-mod bpe;
+#[path = "support/byte_decode.rs"]
+mod byte_decode;
 #[path = "support/fused_fixture.rs"]
 mod fused_fixture;
 #[path = "support/l2.rs"]
@@ -36,7 +36,7 @@ mod l2;
 #[path = "support/lex.rs"]
 mod lex;
 
-use bpe::{gpt2_byte_decoder, true_bytes};
+use byte_decode::{gpt2_byte_decoder, true_bytes};
 use fused_fixture::{Expect, FusedCase};
 use l2::load_schema;
 use purecard::{CompiledGrammar, DecoderSession, Vocab};
