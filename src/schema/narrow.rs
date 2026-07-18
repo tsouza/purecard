@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 
-use crate::grammar::pda::is_ident_tail;
+use crate::grammar::pda::{is_ident_start, is_ident_tail};
 use crate::mask::BitMask;
 use crate::schema::model::{Schema, TypeClass};
 use crate::schema::scope::{L2Position, Lexeme, classify};
@@ -78,6 +78,14 @@ enum CacheKey {
     /// unquoted dual of [`Column`](CacheKey::Column) (a distinct trie kind, so it
     /// needs its own key).
     RelationColumn(usize),
+    /// N1/N2 member set of a class narrowed over a *fused* nav-dot token (`.<member>`
+    /// in one BPE token). Same trie as [`Member`](CacheKey::Member), but the
+    /// candidate/keep rule differs (it strips a leading `.`), so the per-node mask
+    /// memo is distinct.
+    FusedMember(String),
+    /// N6 bare-ident column set narrowed over a fused nav-dot token (`.<col>`) — the
+    /// fused dual of [`RelationColumn`](CacheKey::RelationColumn).
+    FusedRelationColumn(usize),
 }
 
 impl NarrowCache {
@@ -175,6 +183,125 @@ pub(crate) fn narrow_into(
             eos_bit,
             || Trie::from_names(columns.iter().cloned()),
         ),
+    }
+}
+
+/// Refill `dst` with the schema-legal set for a **fused nav-dot** token — one where
+/// byte-level BPE packs the navigation `.` and the property/column's first byte into
+/// a single token (`.theme`, `.zzz`). The ordinary [`narrow_into`] mask is read at
+/// the anchor *before* the dot, where the member/column position is not yet active,
+/// and even where it is active its candidate rule treats the token's first byte as
+/// the identifier's first byte — so a `.`-led token slips through unnarrowed
+/// (`docs/spec/schema.md` §6.5). This pass closes that gap: it clears exactly the
+/// `.`-led tokens whose post-dot identifier begins no legal name, and touches
+/// nothing else. It is a second, purely subtractive intersect the session applies on
+/// top of the ordinary narrow: it only ever *clears* bits — precisely the fused
+/// phantoms the anchor-read narrow lets through — so the result stays a subset of L1
+/// and can never widen it.
+///
+/// `pos` is the *post-dot* target a following `.` would navigate to
+/// ([`Member`](L2Position::Member) or [`RelationColumn`](L2Position::RelationColumn),
+/// from [`ScopeTracker::fused_nav_position`](crate::schema::scope::ScopeTracker));
+/// any other position yields no fused constraint.
+// Mirrors [`narrow_into`]'s per-step input signature (output buffer, memo, schema,
+// position, column set, vocab, EOS bit); a context struct would add hot-path
+// indirection for no clarity gain, so the count is accepted here as it is there.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn narrow_fused_into(
+    dst: &mut BitMask,
+    cache: &mut NarrowCache,
+    schema: &Schema,
+    pos: &L2Position,
+    columns: &[Vec<u8>],
+    vocab: &Vocab,
+    eos_bit: u32,
+) -> bool {
+    match pos {
+        L2Position::Member(class) => narrow_fused_trie(
+            dst,
+            cache,
+            CacheKey::FusedMember(class.clone()),
+            vocab,
+            eos_bit,
+            || Trie::from_names(schema.member_names(class)),
+        ),
+        L2Position::RelationColumn => narrow_fused_trie(
+            dst,
+            cache,
+            CacheKey::FusedRelationColumn(columns.len()),
+            vocab,
+            eos_bit,
+            || Trie::from_names(columns.iter().cloned()),
+        ),
+        _ => false,
+    }
+}
+
+/// Build (or reuse) the rule's trie and fill/memoize the fused-token mask at its
+/// root. The trie content matches the post-dot [`narrow_trie`] rule; only the
+/// keep-rule differs ([`fill_fused_trie`]), so the memo lives under a distinct
+/// `Fused*` [`CacheKey`] rather than colliding with the post-dot per-cursor masks.
+fn narrow_fused_trie(
+    dst: &mut BitMask,
+    cache: &mut NarrowCache,
+    key: CacheKey,
+    vocab: &Vocab,
+    eos_bit: u32,
+    build: impl FnOnce() -> Trie,
+) -> bool {
+    let entry = cache.tries.entry(key).or_insert_with(|| RuleCache {
+        trie: build(),
+        kind: TrieKind::Ident,
+        masks: HashMap::new(),
+    });
+    let root = entry.trie.root();
+    if let Some(cached) = entry.masks.get(&root) {
+        dst.copy_from(cached);
+    } else {
+        fill_fused_trie(dst, vocab, eos_bit, &entry.trie);
+        entry.masks.insert(root, dst.clone());
+    }
+    true
+}
+
+/// Fill `dst` for a fused nav-dot pass: clear a token only when it is a fused
+/// `.<ident>` (a leading `.` immediately followed by an identifier byte) whose
+/// post-dot identifier walks off every legal name from the trie root. Every other
+/// token — a bare `.`, a quoted member (`.'name'`), an operator, a non-`.` token —
+/// is kept, so L2 never masks a token L1 admits outside the phantom class this pass
+/// targets. The reserved EOS bit is always kept (§4.3).
+fn fill_fused_trie(dst: &mut BitMask, vocab: &Vocab, eos_bit: u32, trie: &Trie) {
+    dst.clear_all();
+    let root = trie.root();
+    for id in 0..vocab.len() as u32 {
+        let bytes = vocab.bytes(id).unwrap_or(&[]);
+        let keep = match fused_post_dot(bytes) {
+            Some(rest) => !matches!(walk(trie, root, rest), Walk::Diverge),
+            None => true,
+        };
+        if keep {
+            dst.set(id);
+        }
+    }
+    dst.set(eos_bit);
+}
+
+/// The post-dot bytes of a fused nav-dot identifier token — `Some(rest)` when
+/// `bytes` is a leading `.` followed by an identifier-**start** byte (so `rest` is
+/// the property/column the dot navigates into), else `None` (a bare `.`, a quoted or
+/// whitespace-led member, or any non-navigation token, all left untouched).
+///
+/// The identifier-*start* gate (not merely ident-tail) is load-bearing for
+/// soundness: a member/column name always starts with a letter or `_`, and after a
+/// navigation `.` the byte-PDA is in `AfterDot`, which requires exactly that. A
+/// *value*-position leading-dot float (`.5`) instead routes through `NeedFracDigit`
+/// (its first byte is a digit), so excluding digit-led rests guarantees this pass
+/// can only ever clear a genuine member navigation, never a float literal — even if
+/// the pre-dot scope target were stale for a bare `$var` operand.
+fn fused_post_dot(bytes: &[u8]) -> Option<&[u8]> {
+    match bytes {
+        [b'.', rest @ ..] if rest.first().is_some_and(|&b| is_ident_start(b)) => Some(rest),
+        _ => None,
     }
 }
 
@@ -386,9 +513,80 @@ mod tests {
         run_prefix(pos, cols, b"", v)
     }
 
+    /// Run the fused nav-dot pass for `pos` over `v`, routing mask length and EOS
+    /// through the grammar exactly as the session does.
+    fn run_fused(pos: &L2Position, cols: &[Vec<u8>], v: Vocab) -> (bool, BitMask) {
+        let grammar = CompiledGrammar::compile(v);
+        let mut mask = BitMask::with_len(grammar.mask_len());
+        let mut cache = NarrowCache::new();
+        let applied = super::narrow_fused_into(
+            &mut mask,
+            &mut cache,
+            &schema(),
+            pos,
+            cols,
+            grammar.vocab(),
+            grammar.eos_bit(),
+        );
+        (applied, mask)
+    }
+
     #[test]
     fn none_position_yields_no_mask() {
         assert!(!run(&L2Position::None, &[], vocab(&[b"x"])).0);
+    }
+
+    #[test]
+    fn fused_member_masks_a_dotted_phantom_but_keeps_real_navigations() {
+        // class A members: {country, countryName} → legal post-dot first char {c}.
+        let v = vocab(&[
+            b".country",   // 0: fused real member — kept
+            b".c",         // 1: fused legal prefix — kept
+            b".zzz",       // 2: fused phantom (no `z…` member) — masked
+            b".maker",     // 3: fused phantom (no `m…` member) — masked
+            b".",          // 4: bare dot (member opens next token) — kept
+            b".'country'", // 5: fused *quoted* member — kept (not ident-led)
+            b".5",         // 6: leading-dot float — kept (digit-led, not a member)
+            b"country",    // 7: non-dot ident (refvar continuation) — kept
+            b"->filter",   // 8: non-dot structural — kept
+        ]);
+        let (applied, mask) = run_fused(&L2Position::Member("A".to_owned()), &[], v);
+        assert!(applied);
+        for id in [0u32, 1, 4, 5, 6, 7, 8] {
+            assert!(bit(&mask, id), "token {id} must be kept");
+        }
+        assert!(!bit(&mask, 2), "fused phantom `.zzz` must be masked");
+        assert!(!bit(&mask, 3), "fused phantom `.maker` must be masked");
+    }
+
+    #[test]
+    fn fused_relation_column_masks_a_dotted_phantom_column() {
+        // arm-R dual: `$row.<col>` fused. Emitted columns = {Cyl}.
+        let v = vocab(&[b".Cyl", b".Zzz", b".", b"Cyl"]);
+        let cols = [b"Cyl".to_vec()];
+        let (applied, mask) = run_fused(&L2Position::RelationColumn, &cols, v);
+        assert!(applied);
+        assert!(bit(&mask, 0), "fused emitted column `.Cyl` kept");
+        assert!(!bit(&mask, 1), "fused phantom column `.Zzz` masked");
+        assert!(bit(&mask, 2), "bare dot kept");
+        assert!(bit(&mask, 3), "non-dot token kept");
+    }
+
+    #[test]
+    fn fused_pass_is_inert_for_non_navigable_positions() {
+        // Only Member / RelationColumn are fused-navigable; every other position
+        // applies no fused constraint (the ordinary narrow handles them).
+        for pos in [
+            L2Position::None,
+            L2Position::SourceIdent,
+            L2Position::Column,
+            L2Position::ReValue(TypeClass::Numeric),
+        ] {
+            assert!(
+                !run_fused(&pos, &[], vocab(&[b".zzz"])).0,
+                "{pos:?} must apply no fused constraint"
+            );
+        }
     }
 
     #[test]

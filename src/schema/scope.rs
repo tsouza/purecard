@@ -870,6 +870,68 @@ impl ScopeTracker {
         }
     }
 
+    /// The **post-dot** L2 target a fused nav-dot token (`.<member>` / `.<col>` in
+    /// one BPE token) should be narrowed against here, or [`None`] where a following
+    /// `.` would open no class-member / relation-column navigation.
+    ///
+    /// The ordinary [`position`](ScopeTracker::position) is read at the anchor
+    /// *before* the dot, so it cannot narrow an identifier that rides in behind a
+    /// fused `.`; the session applies this as a second, subtractive narrow
+    /// ([`narrow_fused_into`](crate::schema::narrow::narrow_fused_into)). This mirrors
+    /// [`on_dot`](ScopeTracker::on_dot) read-only, resolving the identifier a dot
+    /// would close from the still-open pending buffer (mid-BPE) or a just-dispatched
+    /// refvar. Where a `.` is not in fact L1-legal the affected mask bits are already
+    /// clear, so an over-permissive target is a no-op, never unsound. Returns only
+    /// [`Member`](L2Position::Member) or [`RelationColumn`](L2Position::RelationColumn).
+    pub(crate) fn fused_nav_position(&self, schema: &Schema) -> Option<L2Position> {
+        // (a) An identifier still open at the token boundary — a `.` closes it, then
+        //     navigates from what it resolves to. Only `$var` (a refvar, anchored at
+        //     `AfterDollar`) and a member step (anchored at `AfterDot`) navigate; a
+        //     source classpath, method name, or open string does not.
+        if let Some(pending) = &self.pending {
+            if pending.kind != LexKind::Ident {
+                return None;
+            }
+            let ident = std::str::from_utf8(&pending.buf).ok()?;
+            return match pending.anchor {
+                State::AfterDollar => self.nav_from_var(ident),
+                State::AfterDot => self.nav_from_member(ident, schema),
+                _ => None,
+            };
+        }
+        // (b) No open identifier: a refvar already dispatched and awaiting its dot
+        //     (`$c .foo`), or a completed navigation resting at a class.
+        if let Some(var) = &self.pending_refvar {
+            return self.nav_from_var(var);
+        }
+        self.nav_cursor.clone().map(L2Position::Member)
+    }
+
+    /// The fused-nav target of a `.` closing the refvar `var` — the emitted-column
+    /// universe for an arm-R relation row, else the class `var` is bound to (nav
+    /// terminates, so [`None`], when `var` is unbound, e.g. a TDS row binder).
+    fn nav_from_var(&self, var: &str) -> Option<L2Position> {
+        if self.relation_row_vars.contains(var) {
+            return Some(L2Position::RelationColumn);
+        }
+        self.var_class
+            .get(var)
+            .cloned()
+            .flatten()
+            .map(L2Position::Member)
+    }
+
+    /// The fused-nav target of a `.` closing the member step `member` — the class it
+    /// resolves to from the current navigation base, or [`None`] when it resolves to
+    /// a primitive/enum (nav terminates) or has no base to resolve against.
+    fn nav_from_member(&self, member: &str, schema: &Schema) -> Option<L2Position> {
+        let base = self.dot_base.as_ref()?;
+        match schema.resolve(base, member) {
+            Some(Resolved::Class { path, .. }) => Some(L2Position::Member(path)),
+            _ => None,
+        }
+    }
+
     /// The identifier/string bytes emitted since the current lexeme's anchor — the
     /// trie-walk prefix the narrower reads. Empty at an anchor (no open
     /// accumulation) so the walk starts at the trie root.
@@ -1002,6 +1064,44 @@ mod tests {
             tracker.position(pda.state()),
             L2Position::Member("A".to_owned())
         );
+    }
+
+    #[test]
+    fn fused_nav_position_targets_the_bound_var_class_before_the_dot() {
+        // `|A.all()->filter(x|$x` — the dot is NOT yet consumed (a fused `.member`
+        // token would carry it). The fused pass must still see the coming nav as N1
+        // on A, resolving the still-open refvar `x` from the pending buffer.
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"$", b"x",
+        ];
+        let (tracker, _pda) = run(tokens);
+        assert_eq!(
+            tracker.fused_nav_position(&schema()),
+            Some(L2Position::Member("A".to_owned()))
+        );
+    }
+
+    #[test]
+    fn fused_nav_position_survives_a_dispatched_refvar_awaiting_its_dot() {
+        // `$x ` — the refvar closed on whitespace (so it is dispatched, not pending),
+        // yet a following `.member` still navigates A.
+        let tokens: &[&[u8]] = &[
+            b"|", b"A", b".", b"all", b"(", b")", b"->", b"filter", b"(", b"x", b"|", b"$", b"x",
+            b" ",
+        ];
+        let (tracker, _pda) = run(tokens);
+        assert_eq!(
+            tracker.fused_nav_position(&schema()),
+            Some(L2Position::Member("A".to_owned()))
+        );
+    }
+
+    #[test]
+    fn fused_nav_position_is_none_at_the_source_classpath() {
+        // `|A` — the source classpath's coming dot opens `.all()`, not a member nav,
+        // so a fused `.all` must never be narrowed against A's members.
+        let (tracker, _pda) = run(&[b"|", b"A"]);
+        assert_eq!(tracker.fused_nav_position(&schema()), None);
     }
 
     #[test]

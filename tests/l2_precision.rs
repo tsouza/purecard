@@ -186,6 +186,49 @@ fn n1_masks_a_phantom_property_after_a_bound_var() {
 }
 
 #[test]
+fn n1_masks_a_phantom_property_fused_with_the_nav_dot() {
+    // Byte-level BPE fuses the navigation `.` with the property's first character
+    // into a single token (`.z`, `.theme`, `.maker` are each one token). N1 must
+    // narrow the post-dot identifier even when it rides in on the dot's token —
+    // otherwise a phantom whose first char begins no legal property streams
+    // unconstrained (the mask is read at the pre-dot anchor, where the member
+    // position is not yet active). Prefix ends at `$c` (the dot is NOT a separate
+    // token), so the decision point is the fused `.<char>` token itself.
+    let prefix = "|spider::concert_singer::model::default::Concert.all()->filter(c|$c";
+    // Real Concert properties fused with the dot stay admissible…
+    assert_precision("concert_singer", prefix, b".theme", b".zzz");
+    // …and a phantom whose leading char begins no property (`m…`) is masked — the
+    // exact class the split-token path (`$c.` then `maker`) already catches.
+    assert_precision("concert_singer", prefix, b".concertName", b".maker");
+}
+
+#[test]
+fn a_fused_navdot_float_operand_is_never_masked() {
+    // SOUNDNESS guard for the fused-navdot pass: a value-position leading-dot float
+    // (`.5`) shares its shape with a fused member token but routes through the
+    // number states, not `AfterDot`. Even where a bare class-bound `$var` operand
+    // leaves a stale nav target, the ident-START gate must keep `.5` admissible.
+    let prefix = "|spider::concert_singer::model::default::Concert.all()->filter(c|$c.year > $c.stadiumId + ";
+    let verdict = admissible_after("concert_singer", prefix, &[b".5"]);
+    assert!(
+        verdict[0],
+        "L2 SOUNDNESS: fused leading-dot float `.5` masked by the nav-dot pass"
+    );
+}
+
+#[test]
+fn n1_masks_a_phantom_property_fused_after_a_class_navigation() {
+    // Nested navigation: an association step reaches a class, and the *next* nav dot
+    // is fused with the following property. With `$x.fk0DefaultConcert` still open
+    // (the member the coming dot closes), the fused pass must resolve it to Concert
+    // and narrow the second, fused hop — a real Concert property stays admissible, a
+    // phantom is masked.
+    let prefix = "|spider::concert_singer::model::default::SingerInConcert.all()\
+        ->filter(x|$x.fk2DefaultConcert";
+    assert_precision("concert_singer", prefix, b".theme", b".zzz");
+}
+
+#[test]
 fn n2_masks_a_phantom_after_an_association_step() {
     // `$x.fk2DefaultCarMakers` advances ModelList → CarMakers; `fullName` is a
     // real CarMakers property, `cylinders` (a CarsData property) is not.
@@ -252,6 +295,23 @@ fn arm_r_groupby_map_lambda_binder_masks_a_phantom_column() {
         ->project(~[Cyl: x|$x.cylinders])\
         ->groupBy(~[Cyl], ~'Total': x|$x.";
     assert_precision("car_1", prefix, b"Cyl", b"Zzz");
+}
+
+#[test]
+fn arm_r_groupby_map_binder_narrows_a_fused_relation_column() {
+    // The RelationColumn *fused* branch end-to-end: on an arm-R relation-row binder a
+    // fused `.<Col>` token — the nav dot and the column's first byte packed into one
+    // BPE token — must narrow against the emitted-column universe, not stream on the
+    // strength of the pre-dot anchor (where the column position is not yet active).
+    // The prefix ends at `$x` (the dot is NOT a separate token), so the decision point
+    // is the fused `.<char>` token itself: the real projected column `.Cyl` stays
+    // admissible while a name no `~`-construct emitted (`.Zzz`) is masked — the fused
+    // single-token analogue of the split-token `$x.` column pass.
+    let prefix = "|spider::car_1::model::default::CarsData.all()\
+        ->filter(x|$x.cylinders >= 0)\
+        ->project(~[Cyl: x|$x.cylinders])\
+        ->groupBy(~[Cyl], ~'Total': x|$x";
+    assert_precision("car_1", prefix, b".Cyl", b".Zzz");
 }
 
 #[test]

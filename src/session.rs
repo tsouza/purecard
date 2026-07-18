@@ -24,7 +24,7 @@ use crate::grammar::pda::{Frame, Pda};
 use crate::mask::BitMask;
 use crate::recognizer::ByteRecognizer;
 use crate::schema::Schema;
-use crate::schema::narrow::{NarrowCache, narrow_into};
+use crate::schema::narrow::{NarrowCache, narrow_fused_into, narrow_into};
 use crate::schema::scope::ScopeTracker;
 
 /// A byte-at-a-time decode session over the emitted-Pure grammar, bound to a
@@ -175,6 +175,24 @@ impl<'g> DecoderSession<'g> {
                 self.grammar.vocab(),
                 self.grammar.eos_bit(),
             ) {
+                self.mask.intersect(&self.narrow_buf);
+            }
+            // Byte-level BPE fuses the navigation `.` with the property/column's first
+            // byte into one token (`.theme`, `.zzz`), which the anchor-read narrow
+            // above cannot see (it sits before the dot). Apply a second, subtractive
+            // narrow that clears exactly the `.`-led tokens whose post-dot identifier
+            // begins no legal member/column — the fused-token gap (§6.5).
+            if let Some(fused) = self.tracker.fused_nav_position(schema)
+                && narrow_fused_into(
+                    &mut self.narrow_buf,
+                    &mut self.narrow_cache,
+                    schema,
+                    &fused,
+                    self.tracker.emitted_columns(),
+                    self.grammar.vocab(),
+                    self.grammar.eos_bit(),
+                )
+            {
                 self.mask.intersect(&self.narrow_buf);
             }
         }
