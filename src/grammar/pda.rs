@@ -50,7 +50,7 @@ use crate::grammar::DeadState;
 /// `#[non_exhaustive]`: the variant set is the decoder's internal state machine,
 /// exposed only so a caller can *observe* the automaton configuration (via
 /// [`Pda::state`]) — it is not a stability contract. Variants are added as the
-/// grammar grows (e.g. `SawTilde`, `AfterSourceDot`); a downstream match on
+/// grammar grows (e.g. `SawTilde`); a downstream match on
 /// `State` must carry a `_` arm rather than break on each addition. In-crate
 /// exhaustive matches (`step`, `name`, `index`) are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -76,9 +76,11 @@ pub enum State {
     /// — the position right after a `;`, so `;}` completes a block query.
     BlockStmtClose,
     /// Inside a pipeline *source* classpath identifier segment. Unlike the generic
-    /// [`InIdent`](State::InIdent), a source is not a completed value: only `.`
-    /// (`.all()`), `->` (arm-A `tableReference`), or a `::` classpath separator may
-    /// follow — never whitespace-to-accepting or a closer, so a bare `|X ` dies.
+    /// [`InIdent`](State::InIdent), a source is not a completed value: only a `.`
+    /// (routing into [`AfterDot`](State::AfterDot) — `.all()`, a property/getter, or
+    /// a quoted member `X.'name'`), `->` (arm-A `tableReference`), or a `::` classpath
+    /// separator may follow — never whitespace-to-accepting or a closer, so a bare
+    /// `|X ` dies.
     InSourceIdent,
     /// Just consumed the first `:` of a source-classpath `::` separator; a second
     /// `:` must follow immediately (`db::Db`), so a lone `:` or interior whitespace
@@ -163,13 +165,10 @@ pub enum State {
     /// Just consumed `$`; a `refVar` identifier must follow.
     AfterDollar,
     /// Just consumed `.`; a property / getter / `all` identifier, or a quoted
-    /// member/column name (`$x.'Gross Credits'`), must follow.
+    /// member/column name (`$x.'Gross Credits'`, `X.'name'`), must follow — in both
+    /// value-navigation and pipeline-source position (the Legend grammar admits the
+    /// same set — ws / identifier / quoted string — after either dot).
     AfterDot,
-    /// Just consumed the `.` of a pipeline *source* (`X.all()`); only an identifier
-    /// (`all`, a classpath continuation) may follow — never a quoted string. Kept
-    /// distinct from [`AfterDot`](State::AfterDot) so the value-navigation quoted
-    /// member does not leak into source position (`|X.'name'` stays a dead end).
-    AfterSourceDot,
     /// Just consumed `->`; a step / method / reducer identifier must follow.
     AfterArrow,
     /// Just consumed a single `:` (a typed-binder colon `row: …[1]`) or the first
@@ -243,7 +242,6 @@ impl State {
             State::InMilestoneLit => "InMilestoneLit",
             State::AfterDollar => "AfterDollar",
             State::AfterDot => "AfterDot",
-            State::AfterSourceDot => "AfterSourceDot",
             State::AfterArrow => "AfterArrow",
             State::AfterColon => "AfterColon",
             State::AfterColon2 => "AfterColon2",
@@ -314,14 +312,13 @@ impl State {
             State::SawAmp => 41,
             State::InMilestoneLit => 42,
             State::SawTilde => 43,
-            State::AfterSourceDot => 44,
         }
     }
 
     /// The number of distinct automaton states — the length a per-state cache
     /// (`Vec<_>` keyed by [`index`](State::index)) must have. One more than the
     /// largest [`index`](State::index).
-    pub const COUNT: usize = 45;
+    pub const COUNT: usize = 44;
 
     /// The lexeme class this state is *inside*, if any (`None` = an inter-lexeme
     /// or structural position).
@@ -635,16 +632,17 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
         }
 
         // A pipeline source classpath. Unlike [`InIdent`], a source is not yet a
-        // completed value: it must be produced by `.all()` (`.`), an arm-A
-        // `->tableReference(…)` envelope (`->`), or continue across a `::` classpath
-        // separator. Anything else — whitespace, a closer, an operator — is a dead
-        // state, so a bare `|X ` never reaches an accepting configuration.
+        // completed value: it must be navigated by a `.` (routing into `AfterDot` —
+        // `.all()`, a property/getter, or a quoted member `X.'name'`), produced by an
+        // arm-A `->tableReference(…)` envelope (`->`), or continue across a `::`
+        // classpath separator. Anything else — whitespace, a closer, an operator — is
+        // a dead state, so a bare `|X ` never reaches an accepting configuration.
         State::InSourceIdent => match byte {
             b if is_ident_tail(b) => Step::Next(State::InSourceIdent),
-            // A source dot (`X.all()`) admits only an identifier — never a quoted
-            // string. A dedicated state keeps the value-navigation quoted member
-            // (`AfterDot`) out of source position.
-            b'.' => Step::Next(State::AfterSourceDot),
+            // A source dot (`X.all()`, `X.'name'`) admits the same set as a value
+            // navigation dot (ws / identifier / quoted string), so it shares
+            // `AfterDot` — the Legend grammar draws no distinction.
+            b'.' => Step::Next(State::AfterDot),
             b'-' => Step::Next(State::SourceDash),
             b':' => Step::Next(State::SourceColon),
             _ => Step::Dead,
@@ -849,15 +847,6 @@ pub fn step(state: State, stack_top: Option<Frame>, byte: u8) -> Step {
             // (`''` doubling, §5.5); it closes into `AfterValue`, so the quoted
             // member behaves as a completed navigation value.
             b'\'' => Step::Next(State::InStrLit { escaped: false }),
-            _ => Step::Dead,
-        },
-
-        // A pipeline source's dot (`X.all()`): identifier only. Unlike a value
-        // navigation dot, a quoted string is a dead end here — `|X.'name'` never
-        // reaches an accepting configuration.
-        State::AfterSourceDot => match byte {
-            b if is_ws(b) => Step::Next(State::AfterSourceDot),
-            b if is_ident_start(b) => Step::Next(State::InIdent),
             _ => Step::Dead,
         },
 
@@ -1265,7 +1254,6 @@ mod tests {
         State::InMilestoneLit,
         State::AfterDollar,
         State::AfterDot,
-        State::AfterSourceDot,
         State::AfterArrow,
         State::AfterColon,
         State::AfterColon2,
@@ -1501,16 +1489,15 @@ mod tests {
         assert!(!accepts("|X.all()->filter(x|$x.'Cnt"));
         // A bare dot with no member is still a dead end.
         assert!(dies("|X.all()->filter(x|$x. > 0)"));
-        // The quoted member is a *value-navigation* production only: it must not
-        // leak into pipeline-source position. A source dot admits identifiers
-        // (`X.all()`) but a quoted string there is a dead end.
-        assert!(dies("|X.'name'"));
-        assert!(dies("|X.'name'->all()"));
-        assert!(dies("|demo::Reading.'Cnt'"));
+        // A quoted member is legal after a *source* dot too (`|X.'name'` parses on
+        // the Legend engine) — the source and value dots share the admit-set, so it
+        // must stream, not dead-state.
+        assert!(accepts("|X.'name'"));
+        assert!(accepts("|X.'name'->all()"));
+        assert!(accepts("|demo::Reading.'Cnt'"));
         assert!(accepts("|X.all()"));
-        // A source dot requires an *identifier* start: a digit or operator there is
-        // a dead end (pins `AfterSourceDot`'s `is_ident_start` guard against being
-        // widened to accept any byte).
+        // A dot still requires ws / identifier / quote: a bare digit or operator is a
+        // dead end in both positions (the engine rejects `X.5` / `X.-y` too).
         assert!(dies("|X.5"));
         assert!(dies("|X.-y"));
     }
