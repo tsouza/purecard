@@ -7,9 +7,10 @@
 //! ([`allowed_mask`](DecoderSession::allowed_mask)`.test(id)`), and at
 //! end-of-stream the query is complete with the reserved EOS bit set.
 //!
-//! Both the synthetic-split Tier-1 lane and (once gated) the real-Qwen Tier-2
-//! lane drive this one helper (constitution §4, DRY): the property is identical,
-//! only the id stream differs.
+//! Both the synthetic-split Tier-1 lane and the real-Qwen Tier-2 lane drive this
+//! one helper (constitution §4, DRY): the property is identical, only the id stream
+//! differs. Folding a real tokenizer's token strings back to bytes is a separate
+//! concern, in the `byte_decode` support module.
 
 use purecard::DecoderSession;
 

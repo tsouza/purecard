@@ -68,6 +68,9 @@ jobs:
               # The differential gate (tests/differential_l1.rs) replays this frozen
               # corpus, so a relabel must trigger the lane, not merge unchecked.
               - 'corpus/differential_l1.jsonl'
+              # The structural gate (tests/spider_corpus_replay.rs) derives its cases
+              # from these schemas, so an added/edited schema must trigger the lane.
+              - 'corpus/spider_schemas/**'
               - '.github/workflows/ci.yml'
 
   # --- Primary gate: fmt + lint + build + all nextest layers via xtask -----

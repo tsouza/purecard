@@ -28,6 +28,12 @@ env:
   QWEN_MODEL: Qwen/Qwen2.5-Coder-7B-Instruct
   QWEN_REVISION: c03e6d358207e414f1eca0bb1891e29f1db0e242
   QWEN_TOKENIZER_JSON: target/qwen/tokenizer.json
+  # GPT-4's cl100k_base, mirrored as a tokenizer.json by Xenova/gpt-4 and pinned to an
+  # immutable commit (keep in sync with the justfile's gpt4_revision). The second real
+  # byte-level BPE tokenizer the fused-precision fixture is extracted from.
+  GPT4_MODEL: Xenova/gpt-4
+  GPT4_REVISION: 1d9f1f1b1fae88c0e4df1dab0a397f8de6229075
+  GPT4_TOKENIZER_JSON: target/gpt4/tokenizer.json
 
 jobs:
   qwen-oracle:
@@ -62,3 +68,47 @@ jobs:
       # same recipe a local run uses — no hand-rolled `cargo` in CI.
       - name: Real-Qwen L2 soundness oracle
         run: just qwen-oracle-run
+
+  fused-tokenizer-extract:
+    name: fused-precision fixture anti-rot (real tokenizers)
+    runs-on: ubuntu-latest
+    # A ~8 MB tokenizer pair plus a short extraction — bounded well under the runner
+    # cap so a stuck fetch fails visibly rather than burning a full slot.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      # Restore each pinned tokenizer (network-free on a hit); the fetches below run
+      # only on a miss, keyed on the immutable revision (constitution §2).
+      - name: Cache Qwen tokenizer
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: qwen
+        with:
+          path: target/qwen
+          key: qwen-tokenizer-${{ env.QWEN_REVISION }}
+      - name: Cache GPT-4 tokenizer
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: gpt4
+        with:
+          path: target/gpt4
+          key: gpt4-tokenizer-${{ env.GPT4_REVISION }}
+      - name: Fetch Qwen tokenizer (cache miss only)
+        if: steps.qwen.outputs.cache-hit != 'true'
+        run: curl -sSL --fail --create-dirs -o "$QWEN_TOKENIZER_JSON" "https://huggingface.co/$QWEN_MODEL/resolve/$QWEN_REVISION/tokenizer.json"
+      - name: Fetch GPT-4 tokenizer (cache miss only)
+        if: steps.gpt4.outputs.cache-hit != 'true'
+        run: curl -sSL --fail --create-dirs -o "$GPT4_TOKENIZER_JSON" "https://huggingface.co/$GPT4_MODEL/resolve/$GPT4_REVISION/tokenizer.json"
+      - name: Install just
+        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        with:
+          tool: just
+      # Re-extract the fused-precision fixture from both real tokenizers and diff it
+      # against the committed copy, through the single `just` entry point — a drift
+      # (a tokenizer change or a stale fixture) reddens the nightly, out-of-band from
+      # the hermetic per-PR replay.
+      - name: Fused-precision fixture anti-rot diff
+        run: just fused-tokenizers-run

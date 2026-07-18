@@ -141,3 +141,12 @@ python = ["dep:pyo3", "dep:self_cell", "pyo3/extension-module", "pyo3/abi3-py39"
 # nightly `qwen-oracle.yml` workflow, NOT a per-PR gate. Off by default;
 # `dep:tokenizers` keeps it out of the normal graph.
 qwen-oracle = ["dep:tokenizers"]
+
+# The fused-nav-dot precision fixture extractor (`tests/fused_tokenizer_extract.rs`):
+# re-derives `tests/fixtures/tokenizers/fused_precision.jsonl` from the ACTUAL Qwen +
+# GPT-2 byte-level BPE tokenizers and diffs it against the committed fixture, so the
+# hermetic Tier-A precision fixture cannot rot. Heavy and network-fed like
+# `qwen-oracle`, so it is a `just fused-tokenizers` local/on-demand gate and the
+# nightly `qwen-oracle.yml` workflow, NOT a per-PR gate. Off by default;
+# `dep:tokenizers` keeps it out of the normal graph.
+fused-extract = ["dep:tokenizers"]
