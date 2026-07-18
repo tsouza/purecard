@@ -264,6 +264,13 @@ test-python:
 lint-stale:
     bun scripts/checks/stale-selfdescription.mjs --all
 
+# Re-label the differential corpus against a running Legend engine (offline; the
+# pure core never calls the engine). Asserts the engine version matches the pin,
+# then freezes each query's parse verdict. CI replays the frozen corpus via
+# `tests/differential_l1.rs` without an engine. See scripts/label-differential.mjs.
+label-differential:
+    bun scripts/label-differential.mjs
+
 # ast-grep structural rules (banned constructs, architecture guardrails).
 sweep:
     cargo xtask sweep

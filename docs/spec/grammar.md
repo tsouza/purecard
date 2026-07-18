@@ -6,6 +6,8 @@ _[Spec index](README.md) · [domain model](../domain-model.md)_
 
 L1 is the context-free grammar of the *emitted subset* of Legend Pure that the trained model actually produces. The corpus exercises **two idioms** the grammar must both admit: an **arm-A relational envelope** (`|Db->tableReference(...)->tableToTDS()->…`, the TDS/table-function pipeline, 92.2% of gold) and an **arm-C class-navigation** form (`|Class.all()->…`, class-anchored relation pipelines, 7.8%). Both are single Pure lambdas; they diverge only at the `source` production and in a handful of relational leaf steps. L1 makes the output *parse*; L2 (§6) makes the identifiers/types *resolve against a model*; L3 (faithfulness) is out of scope for both. The both-arms scope is recorded in ADR-0004. A third construct family — **arm-R**, the modern Relation/Function API (`~`-column constructs) the fine-tuned model also emits — is additive, oracle'd by a separate seed corpus, and specified in §5.9 (ADR-0007, ADR-0008).
 
+**Target Legend version.** L1 targets the Legend Pure grammar of **engine 4.113.0** (SDLC 0.195.0) — the pinned compile-oracle stack every gold query was execution-verified against (`corpus/legend-stack/`, `docs/spec/testing.md`). The differential gate (§5.10) labels its corpus against a running engine and asserts that pin (`scripts/label-differential.mjs`), so a grammar comparison never silently runs against a different Legend version. Moving off 4.113.0 is a deliberate, corpus-re-validating change, not a routine bump.
+
 **Core principle (oracle-driven).** Every production below is derived from, and testable against, the execution-verified gold Pure queries the upstream pipeline already produced (see §8 for corpus locations). The verified corpus **is** the spec: a grammar that masks a token appearing in a gold query is a soundness bug. Do **not** invent productions the corpus does not exercise, and do **not** omit ones it does. The construct inventory in §5.7 is the empirical evidence — counts over the full **5,034-query** corpus (`corpus/gold_queries.jsonl`: 4,639 arm-A + 395 arm-C), one per query containing the construct.
 
 ### 5.1 Query envelope (two observed top-level forms)
@@ -142,9 +144,11 @@ binderVar  = ident ;                                   (* lambda HEADER only: th
 refVar     = "$" ident ;                               (* expression BODY only: the "$x" in  $x.name       *)
 literal    = strlit | number | boollit | dateLit | milestoneLit ;
 strlit     = "'" { schar | "''" } "'" ;                (* SINGLE quotes only; embedded quote doubled ''   *)
-number     = [ "-" ] digit { digit } [ "." digit { digit } ] ;
+number     = [ "-" ] ( digit { digit } [ frac ] | frac ) ;   (* int, "1.5", leading-dot ".5", "-.5"     *)
+frac       = "." digit { digit } [ exp ] ;             (* exponent only AFTER a fractional part (§5.5)     *)
+exp        = ( "e" | "E" ) [ "+" | "-" ] digit { digit } ;   (* scientific: "1.5e3", "1.5e-3"; NOT "1e3"  *)
 boollit    = "true" | "false" ;
-dateLit    = "%" dateChar { dateChar } ;               (* numeric date/time: %2018-03-17[T07:13:53]        *)
+dateLit    = "%" dateChar { dateChar | "." } ;         (* numeric date/time: %2018-03-17[T07:13:53[.000]]  *)
 dateChar   = digit | "-" | "T" | ":" ;
 milestoneLit = "%" lower { lower } ;                   (* symbolic milestoning: %latest / %latestdate      *)
 lower      = "a".."z" ;
@@ -307,3 +311,31 @@ leading `~`); the compiler oracle catches the residue, exactly as §5.6 sanction
 Like every other L1 identifier, a `~`-column name is an **L2 pass-through** (it
 opens at the `SawTilde` anchor, whose rule is `None`), so arm-R never masks the
 model's emitted column names.
+
+### 5.10 Differential gate (L1 vs. the Legend engine)
+
+The oracle behind §5.6's "tighten only where a real invalid escape is found" is
+made mechanical here. `corpus/differential_l1.jsonl` holds ~200 diverse query
+strings, each labeled with the Legend engine's grammar verdict (`parse_ok` /
+`parse_fail`) frozen offline by `just label-differential` — which POSTs to a
+running engine and **asserts the engine version matches the 4.113.0 pin** before
+labeling, so a comparison never runs against a different grammar. CI replays the
+frozen corpus against L1 only (`tests/differential_l1.rs`); the pure core never
+calls the engine.
+
+The load-bearing property is **soundness**: L1 admits every query the engine
+parses (`parse_ok ⟹ L1 accepts`), except a small, documented `KNOWN_DIVERGENCES`
+allowlist where L1 is *deliberately stricter* than the permissive engine grammar.
+The engine's `grammarToJson` is grammar-permissive — it parses `5abc` / `1_000` as
+element references (`packageableElementPtr`), deferring existence-checks — and a
+constrained decoder should not admit that residue where a value belongs; those
+cases are the allowlist, not a match target. This is the training-side decision to
+target the *intended query dialect*: a bare / number-shaped element-reference
+operand is the hallucination class constrained decoding exists to catch, so L1
+rejects it as out-of-dialect residue rather than mirror the engine's permissive
+over-parse. A qualified or dotted **enum-ref** operand
+(`== Type.Meeting`, `== pkg::E.VALUE`) is by contrast legal Pure and stays
+admitted — pinned by `enum_ref_operands_stay_admitted` so tightening the residue
+cannot silently break it. A *new* `parse_ok` query that L1 rejects and is not
+allowlisted reddens the gate — the class that let the source-position `|X.'name'`
+regression slip past review before this gate existed.

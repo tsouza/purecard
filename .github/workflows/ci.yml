@@ -65,6 +65,9 @@ jobs:
               - 'README.md'
               - 'docs/**'
               - 'corpus/gold_queries.jsonl'
+              # The differential gate (tests/differential_l1.rs) replays this frozen
+              # corpus, so a relabel must trigger the lane, not merge unchecked.
+              - 'corpus/differential_l1.jsonl'
               - '.github/workflows/ci.yml'
 
   # --- Primary gate: fmt + lint + build + all nextest layers via xtask -----
@@ -308,7 +311,13 @@ jobs:
       # then set PUBLIC_API_ENABLED=true.
       - name: Install nightly (for cargo public-api)
         if: ${{ vars.PUBLIC_API_ENABLED == 'true' }}
-        uses: dtolnay/rust-toolchain@efcb852328a9f50117170cc43094fb6f09eaf1ae # nightly
+        # Pin the action to its append-only default branch (master) and select the
+        # channel via `toolchain:`. Pinning the force-pushed `nightly` channel head
+        # rots: the commit is orphaned on the next nightly and reads as an
+        # impostor-commit to the zizmor gate.
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: nightly
       - name: public API snapshot
         if: ${{ vars.PUBLIC_API_ENABLED == 'true' }}
         run: cargo xtask public-api
