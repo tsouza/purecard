@@ -1006,11 +1006,22 @@ mod tests {
 
     #[test]
     fn an_all_dot_is_not_a_member_navigation() {
-        // The `.` of `A.all()` is a *source* dot (`AfterSourceDot`, distinct from a
-        // value-navigation `AfterDot`): it navigates from no bound var — no Member
-        // narrowing, so `all` is never masked.
+        // The `.` of `A.all()` navigates from no bound var — no Member narrowing, so
+        // `all` is never masked. (A source dot and a value dot share `AfterDot`.)
         let (tracker, pda) = run(&[b"|", b"A", b"."]);
-        assert_eq!(pda.state(), State::AfterSourceDot);
+        assert_eq!(pda.state(), State::AfterDot);
+        assert_eq!(tracker.position(pda.state()), L2Position::None);
+    }
+
+    #[test]
+    fn a_quoted_member_after_a_source_dot_is_not_a_member_navigation() {
+        // `|A.'name'` — a quoted member off a source dot. The dot shares the unified
+        // `AfterDot` state (no bound var, so no Member narrowing), and the quoted
+        // member streams cleanly to an accepting state with a non-member position.
+        // This guards the revert: the source dot must not be a separate,
+        // identifier-only state that would reject the quoted member.
+        let (tracker, pda) = run(&[b"|", b"A", b".", b"'name'"]);
+        assert_eq!(pda.state(), State::InStrLit { escaped: true });
         assert_eq!(tracker.position(pda.state()), L2Position::None);
     }
 
