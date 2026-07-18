@@ -115,7 +115,9 @@ Every rule is tagged. If a rule is untagged, treat it as PROTECTED.
 
 ## 4. Craft — EVOLVABLE where noted
 
-- **DRY / KISS.** Duplication and incidental complexity are defects. (EVOLVABLE
+- **DRY / KISS.** Duplication and incidental complexity are defects — specifically, a
+  value or rule derivable from an authority is derived from it or machine-asserted
+  against it, never restated in a second place that can silently drift. (EVOLVABLE
   in the specifics; the principle is PROTECTED.)
 - **Comment economy — PROTECTED.** Comments explain *why* for genuinely exotic
   logic only. If code needs a comment to be understood, the code is wrong. No
@@ -157,5 +159,28 @@ reviewer red flag.
 > decoder is and does*. It grows only through specs and reviewer-approved PRs, and
 > it is the source of truth that `docs/domain-model.md` elaborates.
 
-*(No domain rules yet. The kit ships domain-agnostic. Add the first rule with the
-first feature — see `docs/methodology/spec-driven.md`.)*
+These first two rules are not new claims — they consolidate what a run of graduated
+lessons (`docs/lessons.md`) has taught repeatedly and now enforce across the specs,
+and are the "what" that `docs/domain-model.md` elaborates.
+
+- **Soundness is absolute; precision is a tracked over-approximation. — the
+  soundness half is PROTECTED.** The decoder must never mask a token that a real
+  query emits — a legal token from a gold query or an engine-legal construct. A
+  masked real token is a *soundness* bug, fixed in the decoder, never by weakening,
+  shrinking, or re-labelling the corpus (`tests/soundness_replay.rs`,
+  `tests/l2_soundness.rs`, `tests/differential_l1.rs`, `tests/spider_corpus_replay.rs`).
+  Where a constraint layer cannot be exact it *over-approximates* — admitting more
+  than the intended dialect rather than risk masking — and every such gap is tracked
+  in a **counted, self-honest, ratcheting allowlist** (`KNOWN_DIVERGENCES`; the
+  `GapKind` tags with exact `EXPECTED_*` counts). Leaks correspond one-to-one to
+  allowlist entries, pinned by exact count, and a closed gap reddens the gate until
+  its entry is removed. Tightening an allowlist (raising precision) is always
+  allowed; loosening the soundness floor is not.
+- **Admission is oracle-driven, never guessed or settled by review. — EVOLVABLE.**
+  Whether a construct is legal Legend Pure is decided by a must-parse / must-reject
+  pair verified against the real Legend engine, not by a reviewer's or the
+  generator's intuition. The differential gate (`tests/differential_l1.rs`:
+  engine-parse ⟹ L1-accept, modulo the documented divergence allowlist) and the
+  execution-verified gold corpus are the authority — human review has judged legal
+  Pure illegal more than once (`docs/lessons.md`), so a proposed "must-mask" does not
+  land until an oracle confirms it.
