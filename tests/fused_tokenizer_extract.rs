@@ -239,21 +239,12 @@ fn fused_fixture_matches_the_real_tokenizers() {
     if std::env::var("WRITE_FUSED_FIXTURE").is_ok() {
         std::fs::write(&path, &regenerated)
             .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
-        println!(
-            "wrote {} fused-precision rows to {}",
-            regenerated.lines().count(),
-            path.display()
-        );
         return;
     }
 
     let committed = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read committed fixture {}: {e}", path.display()));
     if regenerated == committed {
-        println!(
-            "fused-precision fixture is current ({} rows)",
-            committed.lines().count()
-        );
         return;
     }
 

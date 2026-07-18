@@ -27,7 +27,6 @@ pub enum Expect {
 /// (serde preserves declaration order), so a regenerated line is byte-identical to
 /// its committed twin and the anti-rot diff is a plain string compare.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct FusedCase {
     /// The tokenizer that produced this row (`qwen` or `gpt4`).
     pub tokenizer: String,

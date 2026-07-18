@@ -24,7 +24,7 @@
 //! navigable member).
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 #[path = "support/bpe.rs"]
@@ -41,13 +41,19 @@ use fused_fixture::{Expect, FusedCase};
 use l2::load_schema;
 use purecard::{CompiledGrammar, DecoderSession, Vocab};
 
-/// Every case the fixture must carry — an exact count so a truncated or bloated
-/// fixture reddens the gate (constitution §3, no thresholds).
-const EXPECTED_CASES: usize = 16;
+/// The exact fixture universe: each real tokenizer, its pinned model-repo revision,
+/// and the exact number of fused cases it must contribute. An exact triple — not a
+/// per-tokenizer *minimum* — so an extra tokenizer, a short or bloated split, or a
+/// swapped revision reddens the gate, the same anti-threshold pin the rest of this
+/// corpus uses (constitution §3, no thresholds).
+const EXPECTED_UNIVERSE: [(&str, &str, usize); 2] = [
+    ("qwen", "c03e6d358207e414f1eca0bb1891e29f1db0e242", 8),
+    ("gpt4", "1d9f1f1b1fae88c0e4df1dab0a397f8de6229075", 8),
+];
 
-/// The minimum cases each tokenizer must contribute, so the precision proof is
-/// driven through BOTH real tokenizers and a fixture missing one reddens.
-const MIN_PER_TOKENIZER: usize = 6;
+/// Every case the fixture must carry — the sum of the pinned per-tokenizer splits,
+/// so a truncated or bloated fixture reddens the gate.
+const EXPECTED_CASES: usize = EXPECTED_UNIVERSE[0].2 + EXPECTED_UNIVERSE[1].2;
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -127,8 +133,20 @@ fn real_tokenizer_fused_nav_dots_are_precisely_masked() {
     let cases = load_cases();
 
     let mut per_tokenizer: BTreeMap<String, usize> = BTreeMap::new();
+    let mut revisions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut identities: BTreeSet<(String, String)> = BTreeSet::new();
     for case in &cases {
         *per_tokenizer.entry(case.tokenizer.clone()).or_default() += 1;
+        revisions
+            .entry(case.tokenizer.clone())
+            .or_default()
+            .insert(case.revision.clone());
+        assert!(
+            identities.insert((case.tokenizer.clone(), case.note.clone())),
+            "duplicate fixture row for {:?} [{}]",
+            case.note,
+            case.tokenizer
+        );
 
         let tokens = decode_row(case);
         let eos = tokens.len() as u32;
@@ -153,17 +171,33 @@ fn real_tokenizer_fused_nav_dots_are_precisely_masked() {
         }
     }
 
-    // The fixture must be whole and span both real tokenizers.
+    // The fixture universe must be EXACTLY the pinned tokenizers, splits, and
+    // revisions — no extra tokenizer, no short or bloated split, no swapped pin.
     assert_eq!(
         cases.len(),
         EXPECTED_CASES,
         "fused-precision case count moved (regenerate + review)"
     );
-    for tokenizer in ["qwen", "gpt4"] {
-        let n = per_tokenizer.get(tokenizer).copied().unwrap_or(0);
-        assert!(
-            n >= MIN_PER_TOKENIZER,
-            "tokenizer {tokenizer:?} contributes only {n} fused cases (< {MIN_PER_TOKENIZER}); the precision proof must span both real tokenizers"
+    let expected: BTreeMap<&str, (&str, usize)> = EXPECTED_UNIVERSE
+        .iter()
+        .map(|(t, rev, n)| (*t, (*rev, *n)))
+        .collect();
+    let actual_names: BTreeSet<&str> = per_tokenizer.keys().map(String::as_str).collect();
+    let expected_names: BTreeSet<&str> = expected.keys().copied().collect();
+    assert_eq!(
+        actual_names, expected_names,
+        "fixture tokenizers are not exactly the pinned set"
+    );
+    for (tokenizer, (rev, n)) in &expected {
+        assert_eq!(
+            per_tokenizer.get(*tokenizer).copied().unwrap_or(0),
+            *n,
+            "tokenizer {tokenizer:?} must contribute exactly {n} fused cases"
+        );
+        assert_eq!(
+            revisions.get(*tokenizer),
+            Some(&BTreeSet::from([(*rev).to_owned()])),
+            "tokenizer {tokenizer:?} rows must all carry the pinned revision {rev}"
         );
     }
 }
