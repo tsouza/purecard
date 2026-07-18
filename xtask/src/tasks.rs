@@ -766,8 +766,18 @@ const CRATE_ROOT_STEM: &str = "lib";
 const LABELER_SRC: &str = "scripts/label-differential.mjs";
 /// The JS `const` in [`LABELER_SRC`] holding the targeted Legend engine version.
 const ENGINE_PIN_CONST: &str = "PINNED_ENGINE_VERSION";
-/// The grammar spec whose Legend-version prose must match the labeler's pin.
+/// The grammar spec whose Legend-version prose must match the labeler's pin, and
+/// whose §5.5 `SortDirection` occurrence count must match the gold corpus.
 const GRAMMAR_DOC: &str = "docs/spec/grammar.md";
+/// Docs that cite the `map` gold count in prose (`` `map` (<N> gold `` ); the count
+/// is read from the corpus, so a hand-copied figure cannot silently drift.
+const OVERVIEW_DOC: &str = "docs/spec/overview.md";
+const DECODER_TESTING_DOC: &str = "docs/methodology/decoder-testing.md";
+/// The two `SortDirection` enum literals whose total corpus occurrences the grammar
+/// spec cites — the only enum-shaped literals in the pilot corpus (§5.5).
+const SORT_DIRECTION_LITERALS: [&str; 2] = ["SortDirection.ASC", "SortDirection.DESC"];
+/// The `->map(` pipeline step whose gold-query count `overview.md` / `decoder-testing.md` cite.
+const MAP_STEP: &str = "->map(";
 
 /// Assert every discrete doc fact agrees with its single source (see module note
 /// above). Collects *all* violations before failing, so one run reports the full
@@ -898,6 +908,31 @@ pub fn check_doc_facts() -> Result<()> {
         ));
     }
 
+    // Fact 6 — SortDirection occurrence count in grammar.md §5.5. SoT: the gold
+    // corpus. The count is derived, not hand-copied, so the prose can't drift from
+    // the corpus (it had — a stale 368 for the real 36).
+    let sort_direction = count_corpus_occurrences(GOLD_CORPUS, &SORT_DIRECTION_LITERALS)?;
+    if !grammar_doc.contains(&format!("({sort_direction} occurrences)")) {
+        errors.push(format!(
+            "{GRAMMAR_DOC} does not cite the SortDirection occurrence count \
+             ({sort_direction}) from {GOLD_CORPUS}"
+        ));
+    }
+
+    // Fact 7 — `map` gold count in overview.md + decoder-testing.md. SoT: the gold
+    // corpus records using `->map(`. Both docs cite it as `` `map` (<N> gold `` (a
+    // stale ~31 for the real 6 slipped past review before this guard).
+    let map_gold = count_corpus_records_with(GOLD_CORPUS, MAP_STEP)?;
+    let map_citation = format!("`map` ({map_gold} gold");
+    for doc in [OVERVIEW_DOC, DECODER_TESTING_DOC] {
+        let text = std::fs::read_to_string(doc).with_context(|| format!("reading {doc}"))?;
+        if !text.contains(&map_citation) {
+            errors.push(format!(
+                "{doc} does not cite `map` ({map_gold} gold) from {GOLD_CORPUS}"
+            ));
+        }
+    }
+
     if !errors.is_empty() {
         anyhow::bail!(
             "doc-fact drift — each cited fact must match its single source:\n{}",
@@ -988,6 +1023,21 @@ fn parse_js_str_const(content: &str, name: &str) -> Option<String> {
 fn count_corpus_records(path: &str) -> Result<usize> {
     let content = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
     Ok(content.lines().filter(|l| !l.trim().is_empty()).count())
+}
+
+/// Total occurrences of any of `needles` across the corpus. Each literal appears
+/// unescaped in the JSONL `pure_text`, so a raw substring count matches how a spec
+/// prose figure counts them (an "N occurrences" tally, not a per-record one).
+fn count_corpus_occurrences(path: &str, needles: &[&str]) -> Result<usize> {
+    let content = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    Ok(needles.iter().map(|n| content.matches(n).count()).sum())
+}
+
+/// The number of corpus records (one gold query per line) whose text contains
+/// `needle` — a per-gold count (an "N gold" tally).
+fn count_corpus_records_with(path: &str, needle: &str) -> Result<usize> {
+    let content = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    Ok(content.lines().filter(|l| l.contains(needle)).count())
 }
 
 /// The set of `.rs` module basenames named in the fenced tree under §3.2.
