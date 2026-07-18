@@ -134,6 +134,13 @@ fn classpath(db: &str, class: &str) -> String {
     format!("spider::{db}::model::default::{class}")
 }
 
+/// The class simple-name at the tail of a classpath — the inverse of the
+/// `<Class>` slot [`classpath`] fills, factored out so the per-rule generators name
+/// it one way.
+fn class_of(cp: &str) -> &str {
+    cp.rsplit("::").next().unwrap_or(cp)
+}
+
 /// Whether a schema identifier is a Pure-legal lexer identifier (starts with a
 /// letter or `_`). A digit-leading Spider column (e.g. `1849RatingShare`) is not
 /// expressible as a Pure member and is skipped — it is an upstream naming artifact,
@@ -171,6 +178,29 @@ pub fn generate(dir: &Path) -> Vec<Case> {
     cases
 }
 
+/// Every `.`-navigation an association exposes, as `(source_path, via, target_path)`:
+/// the end at one side is navigable *from the class the other end targets*. Only
+/// 2-end associations whose property name is a Pure identifier are yielded — the one
+/// place the association-traversal rule lives, shared by [`navigable_members`] (which
+/// wants `source`/`via`) and [`generate_n2`] (which also wants `target`).
+fn navigations(schema: &SchemaJson) -> impl Iterator<Item = (&str, &str, &str)> {
+    schema
+        .associations
+        .iter()
+        .filter(|a| a.ends.len() == 2)
+        .flat_map(|a| {
+            (0..2).map(move |from| {
+                let to = 1 - from;
+                (
+                    a.ends[from].target_class.as_str(),
+                    a.ends[to].property_name.as_str(),
+                    a.ends[to].target_class.as_str(),
+                )
+            })
+        })
+        .filter(|(_, via, _)| is_pure_ident(via))
+}
+
 /// Every property name navigable from a class via `.`, keyed by class path: its
 /// scalar properties **plus** the association ends whose opposite end targets it.
 /// This mirrors the decoder's N1 member universe — an association end is a real
@@ -190,20 +220,9 @@ fn navigable_members(schema: &SchemaJson) -> std::collections::HashMap<&str, Vec
             (path.as_str(), scalars)
         })
         .collect();
-    for assoc in &schema.associations {
-        if assoc.ends.len() != 2 {
-            continue;
-        }
-        for from in 0..2 {
-            let to = 1 - from;
-            // The end at `to` is navigable from the class the end at `from` targets.
-            let source = assoc.ends[from].target_class.as_str();
-            let via = assoc.ends[to].property_name.as_str();
-            if is_pure_ident(via)
-                && let Some(list) = members.get_mut(source)
-            {
-                list.push(via);
-            }
+    for (source, via, _target) in navigations(schema) {
+        if let Some(list) = members.get_mut(source) {
+            list.push(via);
         }
     }
     members
@@ -256,7 +275,7 @@ fn generate_n1(
     member_set: &BTreeSet<&str>,
     out: &mut Vec<Case>,
 ) {
-    let class = cp.rsplit("::").next().unwrap_or(cp);
+    let class = class_of(cp);
     // Soundness rides on scalar properties: `<scalar> == 'x'` is a well-formed
     // comparison, whereas an association end is a class collection (its arity is
     // exercised by N2 chained navigation instead).
@@ -312,7 +331,7 @@ fn strict_prefix_phantom<'a>(
 /// some member begins with that letter, else masked (the PR #45 fix class). Covers
 /// `a..=z`; a digit can never begin a Pure member, so every `.<digit>` is masked.
 fn generate_n1_fusion(db: &str, cp: &str, members: &[&str], out: &mut Vec<Case>) {
-    let class = cp.rsplit("::").next().unwrap_or(cp);
+    let class = class_of(cp);
     let legal_first: BTreeSet<u8> = members
         .iter()
         .filter_map(|m| m.bytes().next())
@@ -340,7 +359,7 @@ fn generate_n1_fusion(db: &str, cp: &str, members: &[&str], out: &mut Vec<Case>)
 /// mismatch and must be masked at the operand. (The real-typed inverse, a string
 /// literal against a numeric column, lives on the canonical fixtures.)
 fn generate_t1(db: &str, cp: &str, members: &[&str], out: &mut Vec<Case>) {
-    let class = cp.rsplit("::").next().unwrap_or(cp);
+    let class = class_of(cp);
     // One representative member per class keeps T1 breadth without 4,503 near-clones.
     let Some(m) = members.first() else { return };
     out.push(Case {
@@ -362,52 +381,40 @@ fn generate_n2(schema: &SchemaJson, out: &mut Vec<Case>) {
         .iter()
         .map(|(p, c)| (p.as_str(), c))
         .collect();
-    for assoc in &schema.associations {
-        if assoc.ends.len() != 2 {
+    for (source, via, target) in navigations(schema) {
+        let (Some(src_class), Some(tgt_class)) = (by_path.get(source), by_path.get(target)) else {
             continue;
-        }
-        // An end's property_name is navigable *from the opposite end's class*.
-        for from in 0..2 {
-            let to = 1 - from;
-            let source = &assoc.ends[from].target_class;
-            let via = &assoc.ends[to].property_name;
-            let target = &assoc.ends[to].target_class;
-            let (Some(src_class), Some(tgt_class)) =
-                (by_path.get(source.as_str()), by_path.get(target.as_str()))
-            else {
-                continue;
-            };
-            if !is_pure_ident(via) {
-                continue;
-            }
-            let cp = classpath(db, &src_class.simple_name);
-            let target_member = tgt_class
-                .properties
-                .iter()
-                .map(|p| p.name.as_str())
-                .find(|n| is_pure_ident(n));
-            let Some(tm) = target_member else { continue };
-            // Soundness: real 2-hop nav must stream.
-            out.push(Case {
-                id: format!("{db}/N2_soundness/{}.{via}.{tm}", src_class.simple_name),
-                db: db.clone(),
-                query: format!("|{cp}.all()->filter({BINDER}|${BINDER}.{via}.{tm} == 'x')->size()"),
-                check: Check::Streams,
-                gap: None,
-            });
-            // Precision: a phantom tail after the nav must be masked. It leaks when
-            // `via` is also a scalar property of the source class (the scalar
-            // reading terminates navigation).
-            let ambiguous = src_class.properties.iter().any(|p| &p.name == via);
-            out.push(Case {
-                id: format!("{db}/N2_phantom/{}.{via}.{NAV_PHANTOM_TAIL}", src_class.simple_name),
-                db: db.clone(),
-                query: format!(
-                    "|{cp}.all()->filter({BINDER}|${BINDER}.{via}.{NAV_PHANTOM_TAIL} == 'x')->size()"
-                ),
-                check: Check::DeadEnds,
-                gap: ambiguous.then_some(GapKind::N2AmbiguousScalarEnd),
-            });
-        }
+        };
+        let cp = classpath(db, &src_class.simple_name);
+        let target_member = tgt_class
+            .properties
+            .iter()
+            .map(|p| p.name.as_str())
+            .find(|n| is_pure_ident(n));
+        let Some(tm) = target_member else { continue };
+        // Soundness: real 2-hop nav must stream.
+        out.push(Case {
+            id: format!("{db}/N2_soundness/{}.{via}.{tm}", src_class.simple_name),
+            db: db.clone(),
+            query: format!("|{cp}.all()->filter({BINDER}|${BINDER}.{via}.{tm} == 'x')->size()"),
+            check: Check::Streams,
+            gap: None,
+        });
+        // Precision: a phantom tail after the nav must be masked. It leaks when
+        // `via` is also a scalar property of the source class (the scalar reading
+        // terminates navigation).
+        let ambiguous = src_class.properties.iter().any(|p| p.name == via);
+        out.push(Case {
+            id: format!(
+                "{db}/N2_phantom/{}.{via}.{NAV_PHANTOM_TAIL}",
+                src_class.simple_name
+            ),
+            db: db.clone(),
+            query: format!(
+                "|{cp}.all()->filter({BINDER}|${BINDER}.{via}.{NAV_PHANTOM_TAIL} == 'x')->size()"
+            ),
+            check: Check::DeadEnds,
+            gap: ambiguous.then_some(GapKind::N2AmbiguousScalarEnd),
+        });
     }
 }

@@ -99,7 +99,7 @@ pub(crate) fn classify(bytes: &[u8]) -> Lexeme {
     if first.is_ascii_digit() || (first == b'-' && bytes.get(1).is_some_and(u8::is_ascii_digit)) {
         return Lexeme::Number;
     }
-    if first.is_ascii_alphabetic() || first == b'_' {
+    if is_ident_start(first) {
         // An identifier or `::`-joined classpath.
         if let Ok(text) = std::str::from_utf8(bytes) {
             return Lexeme::Ident(text.to_owned());
