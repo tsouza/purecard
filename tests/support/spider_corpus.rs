@@ -45,7 +45,11 @@ const BINDER: &str = "x";
 #[derive(serde::Deserialize)]
 struct SchemaJson {
     db_id: String,
-    classes: std::collections::HashMap<String, ClassJson>,
+    // `BTreeMap`, not `HashMap`: `generate_for_schema` iterates this map to emit
+    // cases, so an ordered map keeps the generated case order deterministic across
+    // runs (matching `read_schemas`' filename sort). Counts are order-independent,
+    // but first-failure diagnostics must reproduce.
+    classes: std::collections::BTreeMap<String, ClassJson>,
     #[serde(default)]
     associations: Vec<AssocJson>,
 }
