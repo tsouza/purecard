@@ -69,11 +69,11 @@ pub struct DecoderSession<'g> {
 }
 
 impl<'g> DecoderSession<'g> {
-    /// A fresh session at the start of a stream, masking against `grammar`.
-    ///
-    /// L1-only: no schema, so the mask is the pure syntactic next-token set.
-    #[must_use]
-    pub fn new(grammar: &'g CompiledGrammar) -> Self {
+    /// A fresh session at the start of a stream, masking against `grammar`, with an
+    /// optional L2 `schema` overlay — the one place the session's field layout and
+    /// buffer sizing live, so [`new`](DecoderSession::new) and
+    /// [`with_schema`](DecoderSession::with_schema) cannot drift apart.
+    fn build(grammar: &'g CompiledGrammar, schema: Option<Schema>) -> Self {
         Self {
             pda: Pda::new(),
             offset: 0,
@@ -81,10 +81,18 @@ impl<'g> DecoderSession<'g> {
             mask: BitMask::with_len(grammar.mask_len()),
             scratch: Vec::new(),
             narrow_buf: BitMask::with_len(grammar.mask_len()),
-            schema: None,
+            schema,
             tracker: ScopeTracker::new(),
             narrow_cache: NarrowCache::new(),
         }
+    }
+
+    /// A fresh session at the start of a stream, masking against `grammar`.
+    ///
+    /// L1-only: no schema, so the mask is the pure syntactic next-token set.
+    #[must_use]
+    pub fn new(grammar: &'g CompiledGrammar) -> Self {
+        Self::build(grammar, None)
     }
 
     /// A fresh session that also enforces the L2 schema overlay against `schema`
@@ -95,17 +103,7 @@ impl<'g> DecoderSession<'g> {
     /// stays L1-only and byte-compatible for M0–M2 callers.
     #[must_use]
     pub fn with_schema(grammar: &'g CompiledGrammar, schema: Schema) -> Self {
-        Self {
-            pda: Pda::new(),
-            offset: 0,
-            grammar,
-            mask: BitMask::with_len(grammar.mask_len()),
-            scratch: Vec::new(),
-            narrow_buf: BitMask::with_len(grammar.mask_len()),
-            schema: Some(schema),
-            tracker: ScopeTracker::new(),
-            narrow_cache: NarrowCache::new(),
-        }
+        Self::build(grammar, Some(schema))
     }
 
     /// The number of bytes consumed since the last [`reset`](DecoderSession::reset).
@@ -316,14 +314,11 @@ impl ByteRecognizer for DecoderSession<'_> {
     }
 
     fn is_complete(&self) -> bool {
-        self.pda.is_accepting()
+        DecoderSession::is_complete(self)
     }
 
     fn reset(&mut self) {
-        self.pda.reset();
-        self.offset = 0;
-        self.tracker = ScopeTracker::new();
-        self.narrow_cache.clear();
+        DecoderSession::reset(self);
     }
 }
 
