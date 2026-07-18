@@ -170,6 +170,45 @@ qwen-oracle:
 qwen-oracle-run:
     QWEN_TOKENIZER_JSON={{ qwen_tokenizer }} cargo test --features qwen-oracle --test qwen_soundness -- --nocapture
 
+# GPT-4's cl100k_base tokenizer, mirrored as a tokenizer.json by Xenova/gpt-4 and
+# pinned to an immutable commit so local and nightly runs are reproducible (keep in
+# sync with qwen-oracle.yml's GPT4_REVISION). The classic GPT-2 tokenizer isolates a
+# lone `.` from following letters and structurally cannot fuse a nav dot, so
+# cl100k_base — the same byte-unicode lineage with a code-aware fusing regex — is the
+# GPT-family tokenizer that meaningfully exercises fused-token precision.
+gpt4_revision := "1d9f1f1b1fae88c0e4df1dab0a397f8de6229075"
+gpt4_tokenizer := "target/gpt4/tokenizer.json"
+
+# Fetch both byte-level BPE tokenizers into the gitignored target/ cache, only when
+# absent or stale (`curl -z`); `--fail` aborts on an HTTP error instead of caching an
+# error page. Shared by the extract + write recipes below and mirrored by the nightly
+# workflow's actions/cache restore (constitution §2, no bare uncached fetch).
+fused-tokenizers-fetch:
+    curl -sSL --fail --create-dirs -z {{ qwen_tokenizer }} -o {{ qwen_tokenizer }} "https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct/resolve/{{ qwen_revision }}/tokenizer.json"
+    curl -sSL --fail --create-dirs -z {{ gpt4_tokenizer }} -o {{ gpt4_tokenizer }} "https://huggingface.co/Xenova/gpt-4/resolve/{{ gpt4_revision }}/tokenizer.json"
+
+# Re-extract the hermetic fused-nav-dot precision fixture from the ACTUAL Qwen +
+# GPT-4 byte-level BPE tokenizers and diff it against the committed
+# tests/fixtures/tokenizers/fused_precision.jsonl (anti-rot). Heavy + network-fed
+# (optional tokenizers dep), so NOT a per-PR gate — the hermetic Tier-A replay
+# (`cargo test --test fused_tokenizer_precision`, default features) is the per-PR
+# gate. Runs on-demand locally and nightly via the qwen-oracle.yml workflow.
+fused-tokenizers: fused-tokenizers-fetch
+    just fused-tokenizers-run
+
+# The extractor invocation — the single `just` entry point shared by the local
+# `fused-tokenizers` recipe and the nightly workflow, so CI never hand-rolls `cargo`
+# (constitution §2). Assumes both tokenizers already sit at their cached paths (the
+# fetch is the caller's job; CI restores them from cache).
+fused-tokenizers-run:
+    QWEN_TOKENIZER_JSON={{ qwen_tokenizer }} GPT4_TOKENIZER_JSON={{ gpt4_tokenizer }} cargo test --features fused-extract --test fused_tokenizer_extract -- --nocapture
+
+# Regenerate the committed fused-precision fixture from the real tokenizers (run only
+# after intentionally changing the extractor seeds or bumping a tokenizer pin, then
+# review the fixture diff). Fetches the tokenizers first, like `fused-tokenizers`.
+fused-tokenizers-write: fused-tokenizers-fetch
+    QWEN_TOKENIZER_JSON={{ qwen_tokenizer }} GPT4_TOKENIZER_JSON={{ gpt4_tokenizer }} WRITE_FUSED_FIXTURE=1 cargo test --features fused-extract --test fused_tokenizer_extract -- --nocapture
+
 # ---------------------------------------------------------------------------
 # Coverage, supply-chain & API-stability gates
 # ---------------------------------------------------------------------------

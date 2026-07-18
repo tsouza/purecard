@@ -14,7 +14,6 @@
 #![cfg(feature = "qwen-oracle")]
 #![forbid(unsafe_code)]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tokenizers::Tokenizer;
@@ -34,7 +33,7 @@ mod l2;
 #[path = "support/lex.rs"]
 mod lex;
 
-use bpe::replay_tokens;
+use bpe::{gpt2_byte_decoder, replay_tokens, true_bytes};
 use corpus::load_gold;
 use fixture_dbs::FIXTURE_DBS;
 use l2::load_schema;
@@ -50,45 +49,6 @@ const MID_QUERY_STEPS: usize = 2;
 
 fn corpus_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("corpus/gold_queries.jsonl")
-}
-
-/// The inverse of GPT-2's `bytes_to_unicode`: map each token-string char back to
-/// the raw byte the model actually emits (this also undoes the `Ġ`→space and
-/// other whitespace conventions, since they live inside the byte table). Every
-/// byte-level-BPE token string is composed only of chars in this table.
-fn gpt2_byte_decoder() -> HashMap<char, u8> {
-    let mut bs: Vec<u8> = (b'!'..=b'~')
-        .chain(0xA1..=0xAC)
-        .chain(0xAE..=0xFF)
-        .collect();
-    let mut cs: Vec<u32> = bs.iter().map(|&b| u32::from(b)).collect();
-    let mut n = 0u32;
-    for b in 0u16..=255 {
-        let byte = b as u8;
-        if !bs.contains(&byte) {
-            bs.push(byte);
-            cs.push(256 + n);
-            n += 1;
-        }
-    }
-    bs.into_iter()
-        .zip(cs)
-        .map(|(b, c)| (char::from_u32(c).expect("valid scalar"), b))
-        .collect()
-}
-
-/// The true emitted bytes of one token string. A special token (`<|im_end|>`, FIM)
-/// is stored as a literal ASCII string whose chars map to themselves, so its
-/// "bytes" are the literal `<|...|>` — never valid Pure, so the byte-PDA rejects
-/// it and it is inadmissible mid-query (M2), exactly as required.
-fn true_bytes(tok: &str, dec: &HashMap<char, u8>) -> Vec<u8> {
-    tok.chars()
-        .map(|c| {
-            *dec.get(&c).unwrap_or_else(|| {
-                panic!("token char {c:?} is outside the byte-level table; the oracle cannot recover its true bytes")
-            })
-        })
-        .collect()
 }
 
 /// Build a `Vocab` over the real Qwen vocabulary in id order, mapping each id to
