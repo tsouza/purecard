@@ -44,7 +44,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Cache Rust build
@@ -61,7 +61,7 @@ jobs:
         if: steps.tokenizer.outputs.cache-hit != 'true'
         run: curl -sSL --fail --create-dirs -o "$QWEN_TOKENIZER_JSON" "https://huggingface.co/$QWEN_MODEL/resolve/$QWEN_REVISION/tokenizer.json"
       - name: Install just
-        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
         with:
           tool: just
       # The oracle runs through the single `just` entry point (constitution §2), the
@@ -77,7 +77,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Cache Rust build
@@ -103,7 +103,7 @@ jobs:
         if: steps.gpt4.outputs.cache-hit != 'true'
         run: curl -sSL --fail --create-dirs -o "$GPT4_TOKENIZER_JSON" "https://huggingface.co/$GPT4_MODEL/resolve/$GPT4_REVISION/tokenizer.json"
       - name: Install just
-        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
         with:
           tool: just
       # Re-extract the fused-precision fixture from both real tokenizers and diff it
