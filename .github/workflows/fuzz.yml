@@ -39,7 +39,7 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: { persist-credentials: false, fetch-depth: 0 }
       # A scheduled run has no PR base to diff against, so force the fuzz job on.
       - name: Filter changed paths
@@ -69,7 +69,7 @@ jobs:
         target: [accept_token, allowed_mask, schema_from_json]
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Nightly is the one channel rust-toolchain.toml (stable) does not provide,
@@ -91,7 +91,7 @@ jobs:
       # the binary each run (it keeps no cross-run cache of its own), but a pinned,
       # prebuilt download is fast and reproducible, not a compile or a floating curl.
       - name: Install cargo-fuzz
-        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b # v2.83.4
         with:
           tool: cargo-fuzz@0.13.2
       # Restore the per-target corpus from the most recent prior run (prefix
