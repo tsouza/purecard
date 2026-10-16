@@ -44,11 +44,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Restore the pinned tokenizer (network-free on a hit); the fetch below only
       # runs on a miss, keyed on the immutable revision.
       - name: Cache Qwen tokenizer
@@ -61,7 +61,7 @@ jobs:
         if: steps.tokenizer.outputs.cache-hit != 'true'
         run: curl -sSL --fail --create-dirs -o "$QWEN_TOKENIZER_JSON" "https://huggingface.co/$QWEN_MODEL/resolve/$QWEN_REVISION/tokenizer.json"
       - name: Install just
-        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: just
       # The oracle runs through the single `just` entry point (constitution §2), the
@@ -77,11 +77,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Restore each pinned tokenizer (network-free on a hit); the fetches below run
       # only on a miss, keyed on the immutable revision (constitution §2).
       - name: Cache Qwen tokenizer
@@ -103,7 +103,7 @@ jobs:
         if: steps.gpt4.outputs.cache-hit != 'true'
         run: curl -sSL --fail --create-dirs -o "$GPT4_TOKENIZER_JSON" "https://huggingface.co/$GPT4_MODEL/resolve/$GPT4_REVISION/tokenizer.json"
       - name: Install just
-        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853 # v2.83.2
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: just
       # Re-extract the fused-precision fixture from both real tokenizers and diff it
